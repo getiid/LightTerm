@@ -29,6 +29,7 @@
   "build": {
     "appId": "ai.astrashell.desktop",
     "productName": "AstraShell",
+    "afterPack": "electron/after-pack.cjs",
     "directories": {
       "output": "release"
     },

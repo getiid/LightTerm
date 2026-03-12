@@ -546,34 +546,44 @@ ipcMain.handle('vault:reset', async () => {
 ipcMain.handle('vault:key-save', async (_event, payload) => {
   if (!vaultKey) return { ok: false, error: '密钥仓库未解锁' }
   const id = payload.id || uuidv4()
+  const privateKeyText = String(payload.privateKey || '').trim()
+  const publicKeyText = String(payload.publicKey || '').trim()
+  const certificateText = String(payload.certificate || '').trim()
+  if (!privateKeyText && !publicKeyText && !certificateText) {
+    return { ok: false, error: '请至少填写私钥/公钥/证书中的一项' }
+  }
 
   let resolvedType = payload.type || 'auto'
   let keyObj = null
-  try {
-    if (!payload.type || payload.type === 'auto') {
-      try {
-        keyObj = sshpk.parsePrivateKey(payload.privateKey, 'putty')
-        resolvedType = 'ppk'
-      } catch {
+  if (privateKeyText) {
+    try {
+      if (!payload.type || payload.type === 'auto') {
         try {
-          keyObj = sshpk.parsePrivateKey(payload.privateKey, 'pem')
-          resolvedType = 'pem'
+          keyObj = sshpk.parsePrivateKey(privateKeyText, 'putty')
+          resolvedType = 'ppk'
         } catch {
-          keyObj = sshpk.parsePrivateKey(payload.privateKey, 'auto')
-          resolvedType = 'openssh'
+          try {
+            keyObj = sshpk.parsePrivateKey(privateKeyText, 'pem')
+            resolvedType = 'pem'
+          } catch {
+            keyObj = sshpk.parsePrivateKey(privateKeyText, 'auto')
+            resolvedType = 'openssh'
+          }
         }
+      } else {
+        keyObj = sshpk.parsePrivateKey(privateKeyText, payload.type === 'ppk' ? 'putty' : payload.type)
       }
-    } else {
-      keyObj = sshpk.parsePrivateKey(payload.privateKey, payload.type === 'ppk' ? 'putty' : payload.type)
+    } catch {
+      return { ok: false, error: '无法识别私钥格式，请检查内容是否完整' }
     }
-  } catch {
-    return { ok: false, error: '无法识别私钥格式，请检查内容是否完整' }
+  } else if (!payload.type || payload.type === 'auto') {
+    resolvedType = publicKeyText && certificateText ? 'bundle' : publicKeyText ? 'public' : 'certificate'
   }
 
   const enc = encryptText(JSON.stringify({
-    privateKey: payload.privateKey || '',
-    publicKey: payload.publicKey || '',
-    certificate: payload.certificate || '',
+    privateKey: privateKeyText,
+    publicKey: publicKeyText,
+    certificate: certificateText,
   }), vaultKey)
   let fp = payload.fingerprint || null
   try {
@@ -725,11 +735,23 @@ ipcMain.handle('ssh:disconnect', async (_event, payload) => {
 ipcMain.handle('localfs:list', async (_event, payload) => {
   const localPath = payload?.localPath || os.homedir()
   try {
-    const items = fs.readdirSync(localPath, { withFileTypes: true }).map((d) => ({
-      name: d.name,
-      isDir: d.isDirectory(),
-      path: path.join(localPath, d.name),
-    }))
+    const items = fs.readdirSync(localPath, { withFileTypes: true }).map((d) => {
+      const fullPath = path.join(localPath, d.name)
+      let stat = null
+      try {
+        stat = fs.statSync(fullPath)
+      } catch {
+        stat = null
+      }
+      return {
+        name: d.name,
+        isDir: d.isDirectory(),
+        path: fullPath,
+        size: stat?.size || 0,
+        createdAt: stat?.birthtimeMs || stat?.ctimeMs || 0,
+        modifiedAt: stat?.mtimeMs || 0,
+      }
+    })
     return { ok: true, path: localPath, items }
   } catch (e) {
     return { ok: false, error: e?.message || '本地目录读取失败' }
@@ -745,7 +767,9 @@ ipcMain.handle('sftp:list', async (_event, payload) => withSftp(payload, async (
         filename: item.filename,
         longname: item.longname,
         size: item.attrs?.size,
+        createdAt: item.attrs?.ctime || item.attrs?.mtime || 0,
         mtime: item.attrs?.mtime,
+        modifiedAt: item.attrs?.mtime || 0,
         isDir: !!(item.attrs?.mode && (item.attrs.mode & 0o40000)),
       }))
       resolve({ ok: true, items: rows })
