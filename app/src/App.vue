@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { Server, FolderTree, Cable, KeyRound, RefreshCcwDot, Settings, ShieldCheck, Pencil } from 'lucide-vue-next'
+import { Server, FolderTree, Cable, KeyRound, RefreshCcwDot, Settings, Pencil } from 'lucide-vue-next'
 import '@xterm/xterm/css/xterm.css'
 
 type NavKey = 'hosts' | 'sftp' | 'serial' | 'vault' | 'sync' | 'settings'
@@ -170,7 +170,7 @@ const initTerminal = () => {
   terminal.loadAddon(fitAddon)
   terminal.open(termEl.value)
   fitAddon.fit()
-  terminal.writeln('LightTerm 启动成功。')
+  terminal.writeln('AstraShell 启动成功。')
 
   terminal.onData((data) => sshConnected.value && window.lightterm.sshWrite({ sessionId: sshSessionId.value, data }))
   window.lightterm.onSshData((msg) => {
@@ -447,7 +447,7 @@ const deleteSftp = async () => {
 const checkVault = async () => {
   if (!window.lightterm?.vaultStatus) {
     bridgeReady.value = false
-    vaultStatus.value = '❌ 桌面桥接未加载（请完全退出 LightTerm 后重新打开桌面版 App）'
+    vaultStatus.value = '❌ 桌面桥接未加载（请完全退出 AstraShell 后重新打开桌面版 App）'
     return
   }
   bridgeReady.value = true
@@ -648,7 +648,7 @@ onMounted(async () => {
 <template>
   <div class="layout">
     <aside class="sidebar">
-      <div class="brand"><ShieldCheck :size="18" /> LightTerm</div>
+      <div class="brand"><img src="/logo-astrashell.svg" alt="AstraShell" class="brand-logo" /> AstraShell</div>
       <ul>
         <li :class="{ active: nav === 'hosts' }" @click="focusTerminal = false; nav = 'hosts'"><Server :size="16" /> 主机</li>
         <li :class="{ active: nav === 'sftp' }" @click="focusTerminal = false; nav = 'sftp'"><FolderTree :size="16" /> SFTP</li>
@@ -885,6 +885,7 @@ onMounted(async () => {
 .layout { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; padding-top: 0; }
 .sidebar { background: linear-gradient(180deg, #eef2f7 0%, #e9edf3 100%); border-right: 1px solid var(--border); padding: 8px 16px 16px; }
 .brand { font-weight: 800; margin-bottom: 14px; font-size: 18px; display: flex; align-items: center; gap: 8px; }
+.brand-logo { width: 20px; height: 20px; border-radius: 5px; }
 .sidebar ul { list-style: none; padding: 0; margin: 0; }
 .sidebar li { padding: 10px 10px; border-radius: 10px; color: var(--text-main); cursor: pointer; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
 .sidebar li:hover { background: #dfe5ee; }

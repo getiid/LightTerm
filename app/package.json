@@ -1,7 +1,7 @@
 {
-  "name": "lightterm-desktop",
+  "name": "astrashell-desktop",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {
@@ -27,8 +27,8 @@
     "vue": "^3.5.25"
   },
   "build": {
-    "appId": "ai.lightterm.desktop",
-    "productName": "LightTerm",
+    "appId": "ai.astrashell.desktop",
+    "productName": "AstraShell",
     "directories": {
       "output": "release"
     },
