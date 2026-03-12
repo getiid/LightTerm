@@ -47,6 +47,7 @@ declare global {
       sftpList: (payload: SSHConfig & { remotePath?: string }) => Promise<{ ok: boolean; error?: string; items?: any[] }>
       sftpUpload: (payload: SSHConfig & { remoteDir?: string; localFile?: string }) => Promise<{ ok: boolean; error?: string; localFile?: string; remoteFile?: string }>
       sftpDownload: (payload: SSHConfig & { remoteFile: string }) => Promise<{ ok: boolean; error?: string; filePath?: string }>
+      sftpDownloadToLocal: (payload: SSHConfig & { remoteFile: string; localDir: string; filename?: string }) => Promise<{ ok: boolean; error?: string; filePath?: string }>
       sftpMkdir: (payload: SSHConfig & { remoteDir: string }) => Promise<{ ok: boolean; error?: string }>
       sftpRename: (payload: SSHConfig & { oldPath: string; newPath: string }) => Promise<{ ok: boolean; error?: string }>
       sftpDelete: (payload: SSHConfig & { remoteFile: string }) => Promise<{ ok: boolean; error?: string }>

@@ -190,12 +190,25 @@ function connectConfigFromPayload(payload) {
     privateKey: payload.privateKey || undefined,
     passphrase: payload.passphrase || undefined,
     readyTimeout: 12000,
+    tryKeyboard: true,
   }
+}
+
+function attachKeyboardHandler(conn, password) {
+  conn.on('keyboard-interactive', (_name, _instructions, _instructionsLang, prompts, finish) => {
+    if (!password) {
+      finish([])
+      return
+    }
+    const responses = (prompts || []).map(() => password)
+    finish(responses)
+  })
 }
 
 async function withSftp(payload, handler) {
   return await new Promise((resolve) => {
     const conn = new SSHClient()
+    attachKeyboardHandler(conn, payload.password)
     conn
       .on('ready', () => {
         conn.sftp(async (err, sftp) => {
@@ -458,6 +471,7 @@ ipcMain.handle('hosts:save', async (_event, payload) => {
     auth_type: payload.authType || 'password',
     password: payload.password || null,
     private_key_ref: payload.privateKeyRef || null,
+    category: payload.category || '默认',
     tags: JSON.stringify(payload.tags || []),
     created_at: now,
     updated_at: now,
@@ -668,6 +682,7 @@ ipcMain.handle('serial:send', async (_event, payload) => {
 
 ipcMain.handle('ssh:test', async (_event, config) => await new Promise((resolve) => {
   const conn = new SSHClient()
+  attachKeyboardHandler(conn, config.password)
   conn.on('ready', () => { conn.end(); resolve({ ok: true }) }).on('error', (err) => resolve({ ok: false, error: err.message })).connect(connectConfigFromPayload(config))
 }))
 
@@ -676,6 +691,7 @@ ipcMain.handle('ssh:connect', async (_event, payload) => await new Promise((reso
   if (!sessionId) return resolve({ ok: false, error: '缺少 sessionId' })
   if (sshSessions.has(sessionId)) return resolve({ ok: true })
   const conn = new SSHClient()
+  attachKeyboardHandler(conn, payload.password)
   conn.on('ready', () => {
     conn.shell({ term: 'xterm-256color', cols: 120, rows: 30 }, (err, stream) => {
       if (err) return resolve({ ok: false, error: err.message })
@@ -756,6 +772,28 @@ ipcMain.handle('sftp:download', async (_event, payload) => withSftp(payload, asy
         if (err) return resolve({ ok: false, error: err.message })
         broadcast('sftp:progress', { type: 'download', percent: 100, done: true })
         resolve({ ok: true, filePath: save.filePath })
+      },
+    )
+  })
+}))
+
+ipcMain.handle('sftp:download-to-local', async (_event, payload) => withSftp(payload, async (sftp) => {
+  const filename = payload.filename || path.basename(payload.remoteFile || 'download.bin')
+  const localFile = path.join(payload.localDir || app.getPath('downloads'), filename)
+  return await new Promise((resolve) => {
+    sftp.fastGet(
+      payload.remoteFile,
+      localFile,
+      {
+        step: (totalTransferred, _chunk, total) => {
+          const percent = total > 0 ? Math.min(100, Math.floor((totalTransferred / total) * 100)) : 0
+          broadcast('sftp:progress', { type: 'download', percent, transferred: totalTransferred, total })
+        },
+      },
+      (err) => {
+        if (err) return resolve({ ok: false, error: err.message })
+        broadcast('sftp:progress', { type: 'download', percent: 100, done: true })
+        resolve({ ok: true, filePath: localFile })
       },
     )
   })

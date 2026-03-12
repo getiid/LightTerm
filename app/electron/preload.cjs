@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('lightterm', {
   sftpList: (payload) => ipcRenderer.invoke('sftp:list', payload),
   sftpUpload: (payload) => ipcRenderer.invoke('sftp:upload', payload),
   sftpDownload: (payload) => ipcRenderer.invoke('sftp:download', payload),
+  sftpDownloadToLocal: (payload) => ipcRenderer.invoke('sftp:download-to-local', payload),
   sftpMkdir: (payload) => ipcRenderer.invoke('sftp:mkdir', payload),
   sftpRename: (payload) => ipcRenderer.invoke('sftp:rename', payload),
   sftpDelete: (payload) => ipcRenderer.invoke('sftp:delete', payload),
