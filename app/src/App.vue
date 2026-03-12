@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { Server, FolderTree, Cable, KeyRound, RefreshCcwDot, Settings, Pencil } from 'lucide-vue-next'
@@ -138,6 +138,8 @@ const selectedRemoteFile = ref('')
 const sftpNewDirName = ref('')
 const sftpRenameTo = ref('')
 const remoteMenu = ref({ visible: false, x: 0, y: 0, filename: '' })
+const textMenu = ref({ visible: false, x: 0, y: 0, mode: 'terminal' as 'terminal' | 'editor' })
+const editorMenuTarget = ref<HTMLInputElement | HTMLTextAreaElement | null>(null)
 const localPath = ref('')
 const localRows = ref<any[]>([])
 const selectedLocalFile = ref('')
@@ -251,8 +253,46 @@ const filteredSnippetItems = computed(() => {
     .sort((a, b) => b.updatedAt - a.updatedAt)
 })
 
+const currentSessionHostId = computed(() => {
+  const host = hostItems.value.find((h) =>
+    h.host === sshForm.value.host
+    && Number(h.port || 22) === Number(sshForm.value.port || 22)
+    && h.username === sshForm.value.username
+  )
+  return host?.id || ''
+})
+
+const terminalSnippetItems = computed(() => {
+  const currentHostId = currentSessionHostId.value
+  return [...snippetItems.value].sort((a, b) => {
+    const aMatched = !!currentHostId && a.hostId === currentHostId
+    const bMatched = !!currentHostId && b.hostId === currentHostId
+    if (aMatched !== bMatched) return aMatched ? -1 : 1
+    return b.updatedAt - a.updatedAt
+  })
+})
+
 const syncStatusText = ref('本地版：不走云端账号，同步依赖共享文件夹数据库。')
 const syncQueueCount = ref(0)
+
+const updateInfo = ref({
+  status: 'idle',
+  message: '等待检查更新',
+  currentVersion: '',
+  latestVersion: '',
+  hasUpdate: false,
+  downloaded: false,
+  checking: false,
+  downloading: false,
+  progress: 0,
+})
+const updateActionBusy = ref(false)
+const updateStatusText = computed(() => {
+  const u = updateInfo.value
+  const current = u.currentVersion || '-'
+  const latest = u.latestVersion || '-'
+  return `当前版本：${current} ｜ 最新版本：${latest} ｜ ${u.message || '就绪'}`
+})
 
 type SnippetItem = {
   id: string
@@ -289,6 +329,7 @@ const snippetEdit = ref<SnippetItem>(createEmptySnippet())
 const snippetExtraCategories = ref<string[]>([])
 const newSnippetCategoryName = ref('')
 const newSnippetCategoryInputVisible = ref(false)
+const terminalSnippetId = ref('')
 
 const storageDbPath = ref('')
 const storageFolderInput = ref('')
@@ -307,21 +348,39 @@ let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
 
 watch(focusTerminal, (value) => {
-  if (value) {
-    nextTick(() => {
-      initTerminal()
-      fitAddon?.fit()
-    })
-  }
+  nextTick(() => {
+    initTerminal()
+    fitAddon?.fit()
+    if (value) terminal?.focus()
+  })
 })
+
+watch(snippetItems, (items) => {
+  if (!items.some((item) => item.id === terminalSnippetId.value)) {
+    terminalSnippetId.value = items[0]?.id || ''
+  }
+}, { immediate: true })
 
 const initTerminal = () => {
   if (!termEl.value || terminal) return
-  terminal = new Terminal({ convertEol: true, fontSize: 13, theme: { background: '#f8fafc', foreground: '#111827', cursor: '#2563eb' } })
+  terminal = new Terminal({
+    convertEol: true,
+    fontSize: 13,
+    rightClickSelectsWord: true,
+    theme: {
+      background: '#f8fafc',
+      foreground: '#111827',
+      cursor: '#2563eb',
+      selectionBackground: '#60a5fa99',
+      selectionInactiveBackground: '#93c5fd66',
+    },
+  })
   fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
   terminal.open(termEl.value)
   fitAddon.fit()
+  terminal.focus()
+  termEl.value.addEventListener('click', () => terminal?.focus())
   // 启动提示改到状态栏，不占终端可视面积
 
   terminal.onData((data) => sshConnected.value && window.lightterm.sshWrite({ sessionId: sshSessionId.value, data }))
@@ -501,6 +560,32 @@ const snippetCommandLines = (commands: string) => (
     .filter((line) => !!line && !line.startsWith('#'))
 )
 
+const ensureSnippetSession = async (target: SnippetItem) => {
+  if (target.hostId) {
+    const host = hostItems.value.find((h) => h.id === target.hostId)
+    if (!host) {
+      snippetStatus.value = '片段绑定的主机不存在，请重新选择'
+      return false
+    }
+    const sameHost = sshConnected.value
+      && sshForm.value.host === host.host
+      && Number(sshForm.value.port || 22) === Number(host.port || 22)
+      && sshForm.value.username === host.username
+    if (!sameHost) {
+      useHost(host)
+      await connectSSH({ keepNav: true })
+      if (!sshConnected.value) {
+        snippetStatus.value = '目标主机连接失败，已停止执行'
+        return false
+      }
+    }
+  } else if (!sshConnected.value) {
+    snippetStatus.value = '请先连接 SSH，或在片段里绑定目标主机'
+    return false
+  }
+  return true
+}
+
 const runSnippet = async (item?: SnippetItem) => {
   const target = item || snippetItems.value.find((s) => s.id === selectedSnippetId.value) || snippetEdit.value
   if (!target?.id && !target?.commands?.trim()) {
@@ -516,29 +601,8 @@ const runSnippet = async (item?: SnippetItem) => {
     snippetStatus.value = '没有可执行命令（空行和 # 注释会自动跳过）'
     return
   }
-
-  if (target.hostId) {
-    const host = hostItems.value.find((h) => h.id === target.hostId)
-    if (!host) {
-      snippetStatus.value = '片段绑定的主机不存在，请重新选择'
-      return
-    }
-    const sameHost = sshConnected.value
-      && sshForm.value.host === host.host
-      && Number(sshForm.value.port || 22) === Number(host.port || 22)
-      && sshForm.value.username === host.username
-    if (!sameHost) {
-      useHost(host)
-      await connectSSH({ keepNav: true })
-      if (!sshConnected.value) {
-        snippetStatus.value = '目标主机连接失败，已停止执行'
-        return
-      }
-    }
-  } else if (!sshConnected.value) {
-    snippetStatus.value = '请先连接 SSH，或在片段里绑定目标主机'
-    return
-  }
+  const ready = await ensureSnippetSession(target)
+  if (!ready) return
 
   snippetRunning.value = true
   snippetStopRequested.value = false
@@ -578,6 +642,108 @@ const snippetHostLabel = (hostId: string) => {
   if (!hostId) return '当前 SSH 会话'
   const host = hostItems.value.find((h) => h.id === hostId)
   return host ? `${host.name} (${host.host})` : '未找到主机'
+}
+
+const getTerminalSnippet = () => {
+  if (terminalSnippetId.value) {
+    const matched = snippetItems.value.find((item) => item.id === terminalSnippetId.value)
+    if (matched) return matched
+  }
+  if (selectedSnippetId.value) {
+    const selected = snippetItems.value.find((item) => item.id === selectedSnippetId.value)
+    if (selected) return selected
+  }
+  return terminalSnippetItems.value[0] || null
+}
+
+const runTerminalSnippet = async () => {
+  const target = getTerminalSnippet()
+  if (!target) {
+    snippetStatus.value = '没有可执行的代码片段'
+    return
+  }
+  await runSnippet(target)
+  terminal?.focus()
+}
+
+const sendSnippetRawToTerminal = async () => {
+  const target = getTerminalSnippet()
+  if (!target) {
+    snippetStatus.value = '没有可发送的代码片段'
+    return
+  }
+  const ready = await ensureSnippetSession(target)
+  if (!ready) return
+  const payload = target.commands || ''
+  if (!payload.trim()) {
+    snippetStatus.value = '片段内容为空'
+    return
+  }
+  const res = await window.lightterm.sshWrite({ sessionId: sshSessionId.value, data: payload })
+  snippetStatus.value = res.ok ? `片段原文已发送：${target.name}` : `片段发送失败：${res.error || '未知错误'}`
+  terminal?.focus()
+}
+
+const readClipboardText = async () => {
+  const res = await window.lightterm.clipboardRead()
+  if (res.ok) return res.text || ''
+  return ''
+}
+
+const copyTerminalSelection = async () => {
+  const text = terminal?.getSelection() || ''
+  if (!text) {
+    sshStatus.value = '请先在终端中选择内容'
+    return
+  }
+  const res = await window.lightterm.clipboardWrite({ text })
+  sshStatus.value = res.ok ? '终端选中内容已复制' : `复制失败：${res.error || '未知错误'}`
+}
+
+const pasteToTerminal = async () => {
+  if (!sshConnected.value) {
+    sshStatus.value = '请先连接 SSH 会话'
+    return
+  }
+  const text = await readClipboardText()
+  if (!text) {
+    sshStatus.value = '剪贴板为空'
+    return
+  }
+  const res = await window.lightterm.sshWrite({ sessionId: sshSessionId.value, data: text })
+  sshStatus.value = res.ok ? '已粘贴到终端' : `粘贴失败：${res.error || '未知错误'}`
+  terminal?.focus()
+}
+
+const selectAllTerminal = () => {
+  terminal?.selectAll()
+  terminal?.focus()
+}
+
+const handleTerminalHotkeys = (event: KeyboardEvent) => {
+  if (!focusTerminal.value) return
+  const target = event.target as HTMLElement | null
+  const tagName = target?.tagName || ''
+  if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') return
+
+  const hasMeta = event.metaKey || event.ctrlKey
+  if (!hasMeta) return
+  const key = event.key.toLowerCase()
+
+  if (key === 'c' && terminal?.hasSelection()) {
+    event.preventDefault()
+    void copyTerminalSelection()
+    return
+  }
+  if (key === 'v') {
+    event.preventDefault()
+    void pasteToTerminal()
+    return
+  }
+  if (key === 'a') {
+    event.preventDefault()
+    selectAllTerminal()
+  }
 }
 
 const connectSSH = async (optionsOrEvent?: { keepNav?: boolean } | Event) => {
@@ -980,6 +1146,111 @@ const showRemoteMenu = (event: MouseEvent, item: any) => {
 const hideRemoteMenu = () => {
   remoteMenu.value.visible = false
 }
+const openTerminalContextMenu = (event: MouseEvent) => {
+  event.preventDefault()
+  hideRemoteMenu()
+  textMenu.value = { visible: true, x: event.clientX, y: event.clientY, mode: 'terminal' }
+}
+const openEditorContextMenu = (event: MouseEvent) => {
+  event.preventDefault()
+  hideRemoteMenu()
+  const target = event.target as HTMLInputElement | HTMLTextAreaElement | null
+  if (!target || typeof target.value !== 'string') return
+  editorMenuTarget.value = target
+  target.focus()
+  textMenu.value = { visible: true, x: event.clientX, y: event.clientY, mode: 'editor' }
+}
+const hideTextMenu = () => {
+  textMenu.value.visible = false
+}
+const hideAllMenus = () => {
+  hideRemoteMenu()
+  hideTextMenu()
+}
+const getEditorTarget = () => editorMenuTarget.value
+const getEditorSelection = () => {
+  const el = getEditorTarget()
+  if (!el) return ''
+  const start = el.selectionStart ?? 0
+  const end = el.selectionEnd ?? start
+  return el.value.slice(start, end)
+}
+const replaceEditorSelection = (text: string) => {
+  const el = getEditorTarget()
+  if (!el) return
+  const start = el.selectionStart ?? 0
+  const end = el.selectionEnd ?? start
+  el.value = `${el.value.slice(0, start)}${text}${el.value.slice(end)}`
+  const pos = start + text.length
+  el.setSelectionRange(pos, pos)
+  el.dispatchEvent(new Event('input', { bubbles: true }))
+  el.focus()
+}
+const copyFromTextMenu = async () => {
+  if (textMenu.value.mode === 'terminal') {
+    await copyTerminalSelection()
+    hideTextMenu()
+    return
+  }
+  const text = getEditorSelection()
+  if (!text) {
+    sshStatus.value = '请先选中文本'
+    hideTextMenu()
+    return
+  }
+  const res = await window.lightterm.clipboardWrite({ text })
+  sshStatus.value = res.ok ? '已复制选中文本' : `复制失败：${res.error || '未知错误'}`
+  hideTextMenu()
+}
+const cutFromTextMenu = async () => {
+  if (textMenu.value.mode !== 'editor') return
+  const text = getEditorSelection()
+  if (!text) {
+    sshStatus.value = '请先选中文本'
+    hideTextMenu()
+    return
+  }
+  const res = await window.lightterm.clipboardWrite({ text })
+  if (!res.ok) {
+    sshStatus.value = `剪切失败：${res.error || '未知错误'}`
+    hideTextMenu()
+    return
+  }
+  replaceEditorSelection('')
+  sshStatus.value = '已剪切选中文本'
+  hideTextMenu()
+}
+const pasteFromTextMenu = async () => {
+  if (textMenu.value.mode === 'terminal') {
+    await pasteToTerminal()
+    hideTextMenu()
+    return
+  }
+  const text = await readClipboardText()
+  if (!text) {
+    sshStatus.value = '剪贴板为空'
+    hideTextMenu()
+    return
+  }
+  replaceEditorSelection(text)
+  sshStatus.value = '已粘贴文本'
+  hideTextMenu()
+}
+const selectAllFromTextMenu = () => {
+  if (textMenu.value.mode === 'terminal') {
+    selectAllTerminal()
+    hideTextMenu()
+    return
+  }
+  const el = getEditorTarget()
+  if (!el) {
+    hideTextMenu()
+    return
+  }
+  el.focus()
+  el.setSelectionRange(0, el.value.length)
+  hideTextMenu()
+}
 const menuDownload = async () => {
   hideRemoteMenu()
   await downloadSftp()
@@ -1255,6 +1526,53 @@ const copyDbPath = async () => {
   syncStatusText.value = '数据库路径已复制'
 }
 
+const applyUpdateState = (payload: any) => {
+  updateInfo.value = {
+    status: payload?.status || updateInfo.value.status,
+    message: payload?.message || updateInfo.value.message,
+    currentVersion: payload?.currentVersion || updateInfo.value.currentVersion,
+    latestVersion: payload?.latestVersion || updateInfo.value.latestVersion,
+    hasUpdate: !!payload?.hasUpdate,
+    downloaded: !!payload?.downloaded,
+    checking: !!payload?.checking,
+    downloading: !!payload?.downloading,
+    progress: Number(payload?.progress || 0),
+  }
+}
+
+const refreshUpdateState = async () => {
+  const res = await window.lightterm.updateGetState()
+  if (!res.ok) return
+  applyUpdateState(res)
+}
+
+const checkAppUpdate = async () => {
+  updateActionBusy.value = true
+  const res = await window.lightterm.updateCheck()
+  if (!res.ok) {
+    updateInfo.value.message = `检查更新失败：${res.error || '未知错误'}`
+  }
+  updateActionBusy.value = false
+}
+
+const downloadAppUpdate = async () => {
+  updateActionBusy.value = true
+  const res = await window.lightterm.updateDownload()
+  if (!res.ok) {
+    updateInfo.value.message = `下载更新失败：${res.error || '未知错误'}`
+  }
+  updateActionBusy.value = false
+}
+
+const installAppUpdate = async () => {
+  updateActionBusy.value = true
+  const res = await window.lightterm.updateInstall()
+  if (!res.ok) {
+    updateInfo.value.message = `安装更新失败：${res.error || '未知错误'}`
+  }
+  updateActionBusy.value = false
+}
+
 const refreshStorageInfo = async () => {
   const res = await window.lightterm.appGetStorage()
   if (res.ok) {
@@ -1308,6 +1626,7 @@ onMounted(async () => {
   await refreshVaultKeys()
   await refreshSyncStatus()
   await refreshStorageInfo()
+  await refreshUpdateState()
   await loadLocalFs()
   window.addEventListener('resize', () => {
     fitAddon?.fit()
@@ -1317,12 +1636,19 @@ onMounted(async () => {
     if (p.type === 'upload') sftpUploadProgress.value = p.percent
     if (p.type === 'download') sftpDownloadProgress.value = p.percent
   })
-  window.addEventListener('click', hideRemoteMenu)
+  window.lightterm.onUpdateStatus((payload) => applyUpdateState(payload))
+  window.addEventListener('click', hideAllMenus)
+  window.addEventListener('keydown', handleTerminalHotkeys)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleTerminalHotkeys)
+  window.removeEventListener('click', hideAllMenus)
 })
 </script>
 
 <template>
-  <div class="layout">
+  <div class="layout" :class="{ 'terminal-layout': focusTerminal }">
     <aside class="sidebar">
       <div class="brand"><img src="/logo-astrashell.svg" alt="AstraShell" class="brand-logo" /> AstraShell</div>
       <ul>
@@ -1337,8 +1663,24 @@ onMounted(async () => {
     </aside>
 
     <main class="main">
-      <div class="top-actions" v-if="focusTerminal">
-        <button class="ghost" @click="focusTerminal = false">返回模块视图</button>
+      <div class="top-actions terminal-top-actions" v-if="focusTerminal">
+        <div class="terminal-tools-left">
+          <button class="ghost" @click="focusTerminal = false">返回模块视图</button>
+          <button class="ghost" @click="selectAllTerminal">全选</button>
+          <button class="ghost" @click="copyTerminalSelection">复制选中</button>
+          <button class="ghost" @click="pasteToTerminal">粘贴</button>
+        </div>
+        <div class="terminal-tools-right">
+          <select v-model="terminalSnippetId">
+            <option value="">选择代码片段</option>
+            <option v-for="item in terminalSnippetItems" :key="item.id" :value="item.id">
+              {{ item.name }} · {{ item.category }}
+            </option>
+          </select>
+          <button class="muted" @click="runTerminalSnippet" :disabled="snippetRunning">执行片段</button>
+          <button class="ghost" @click="sendSnippetRawToTerminal">发送原文</button>
+          <button class="ghost" @click="nav = 'snippets'; focusTerminal = false">管理片段</button>
+        </div>
       </div>
 
       <section v-if="!focusTerminal && nav === 'hosts'" class="panel hosts-panel">
@@ -1664,6 +2006,7 @@ onMounted(async () => {
                   v-model="snippetEdit.commands"
                   class="snippet-command-input"
                   placeholder="每行一条命令。以 # 开头会视为注释并跳过。"
+                  @contextmenu.prevent="openEditorContextMenu"
                 ></textarea>
                 <p class="hint">点击执行后会按行自动发送到 SSH 终端，并自动回车执行。</p>
                 <div class="vault-actions">
@@ -1780,6 +2123,20 @@ onMounted(async () => {
       </section>
 
       <section v-else-if="!focusTerminal && nav === 'settings'" class="panel">
+        <h3>软件更新（GitHub Release）</h3>
+        <p>{{ updateStatusText }}</p>
+        <div class="grid update-grid">
+          <button class="muted" :disabled="updateActionBusy || updateInfo.checking" @click="checkAppUpdate">检查更新</button>
+          <button class="muted" :disabled="updateActionBusy || !updateInfo.hasUpdate || updateInfo.downloaded" @click="downloadAppUpdate">下载更新</button>
+          <button :disabled="updateActionBusy || !updateInfo.downloaded" @click="installAppUpdate">重启并安装</button>
+          <button class="ghost" :disabled="updateActionBusy" @click="refreshUpdateState">刷新状态</button>
+        </div>
+        <div class="update-progress" v-if="updateInfo.downloading">
+          <div class="update-progress-bar"><div class="update-progress-fill" :style="{ width: `${updateInfo.progress}%` }"></div></div>
+          <span>{{ Math.round(updateInfo.progress) }}%</span>
+        </div>
+        <p class="hint">发布新版本到 GitHub Release 后，应用启动会自动检查；也可手动检查并一键更新。</p>
+        <div class="divider"></div>
         <h3>本地存储设置（单机版）</h3>
         <p>当前数据库：{{ storageDbPath }}</p>
         <div class="grid">
@@ -1794,7 +2151,20 @@ onMounted(async () => {
 
       <section v-else-if="!focusTerminal" class="panel"><h3>模块建设中</h3><p>当前页面：{{ nav }}</p></section>
 
-      <section v-show="focusTerminal" class="terminal-wrap" :class="{ focus: focusTerminal }"><div ref="termEl" class="terminal"></div></section>
+      <section v-show="focusTerminal" class="terminal-wrap" :class="{ focus: focusTerminal }">
+        <div ref="termEl" class="terminal" @contextmenu.prevent="openTerminalContextMenu"></div>
+      </section>
+
+      <div
+        v-if="textMenu.visible"
+        class="context-menu"
+        :style="{ left: `${textMenu.x}px`, top: `${textMenu.y}px` }"
+      >
+        <button v-if="textMenu.mode === 'editor'" class="menu-item" @click="cutFromTextMenu">剪切</button>
+        <button class="menu-item" @click="copyFromTextMenu">复制</button>
+        <button class="menu-item" @click="pasteFromTextMenu">粘贴</button>
+        <button class="menu-item" @click="selectAllFromTextMenu">全选</button>
+      </div>
     </main>
 
     <footer class="status-bar fixed-bottom">
@@ -1819,6 +2189,12 @@ onMounted(async () => {
 .sidebar li:hover { background: #dfe5ee; }
 .sidebar li.active { background: #dbeafe; color: #1d4ed8; font-weight: 600; }
 .main { padding: 12px; padding-bottom: 42px; display: flex; flex-direction: column; gap: 10px; height: 100vh; overflow: hidden; }
+.top-actions { flex-shrink: 0; }
+.terminal-top-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #f5f8fc; border: 1px solid #dbe3ee; border-radius: 12px; padding: 8px 10px; }
+.terminal-tools-left,
+.terminal-tools-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.terminal-tools-right { margin-left: auto; }
+.terminal-tools-right select { min-width: 220px; max-width: 360px; }
 .topbar,.panel,.terminal-wrap { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 10px; }
 .topbar { display: flex; align-items: center; justify-content: space-between; padding-left: 110px; min-height: 42px; -webkit-app-region: drag; flex-shrink: 0; }
 .title { font-weight: 700; font-size: 14px; color: #111827; }
@@ -1828,9 +2204,10 @@ button.small { padding: 4px 8px; font-size: 12px; margin-left: auto; }
 .topbar .actions, .topbar .actions *, .topbar button { -webkit-app-region: no-drag; }
 .key-input { grid-column: span 2; }
 .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.grid.update-grid { margin-top: 6px; }
 .panel { overflow: auto; min-height: 120px; }
 .hosts-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: linear-gradient(180deg, #d7dde3 0%, #d2d9df 100%); }
-.sftp-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sftp-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 input,select,button,textarea { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-family: inherit; }
 textarea { min-height: 74px; resize: vertical; }
 button { background: #3b82f6; color: white; border: none; cursor: pointer; }
@@ -1843,9 +2220,13 @@ button.tiny { padding: 4px 10px; font-size: 11px; }
 .tab .x { margin-left: 6px; font-weight: 700; }
 .send-box { display: grid; grid-template-columns: 1fr auto 180px 120px 120px; gap: 10px; margin-top: 10px; align-items: center; }
 .terminal-wrap { flex: 1; min-height: 220px; overflow: hidden; }
-.terminal-wrap.focus { min-height: calc(100vh - 150px); }
+.terminal-wrap.focus { flex: 1; min-height: 0; }
 .terminal { height: 100%; }
-.terminal-wrap.focus .terminal { height: calc(100vh - 210px); }
+.terminal-wrap.focus .terminal { height: 100%; }
+:deep(.xterm .xterm-selection div) { background-color: rgba(96, 165, 250, 0.55) !important; }
+:deep(.xterm .xterm-rows) { cursor: text; }
+textarea::selection,
+input::selection { background: #bfdbfe; color: #0f172a; }
 .split-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin:8px 0 10px; }
 .head-left { display:flex; gap:8px; flex:1; }
 .head-right { position:relative; }
@@ -1854,15 +2235,15 @@ button.tiny { padding: 4px 10px; font-size: 11px; }
 .path-chip span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; }
 .path-chip small { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#64748b; font-size:11px; }
 .connect-panel { position:absolute; right:0; top:38px; background:#fff; border:1px solid var(--border); border-radius:10px; padding:10px; display:grid; gap:8px; min-width:280px; z-index:20; }
-.split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-height: 0; flex: 1; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-height: 0; flex: 1; overflow: hidden; }
 .split > div { border: 1px solid #dbe2ea; background: #f8fafc; border-radius: 10px; padding: 8px; display: flex; flex-direction: column; min-height: 0; }
 .split > div:nth-child(2) { background: #f1f5f9; border-color: #cbd5e1; }
-.file-panel { background: rgba(255, 255, 255, 0.85); border: 1px solid rgba(15,23,42,0.08); border-radius: 16px; padding: 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); }
+.file-panel { background: rgba(255, 255, 255, 0.85); border: 1px solid rgba(15,23,42,0.08); border-radius: 16px; padding: 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); min-height: 0; }
 .file-panel-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .file-head-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
 .connect-inline { margin-top: 8px; padding: 8px; border: 1px solid #d3dce6; border-radius: 10px; background: #f8fbff; display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .file-sort { min-width: 120px; padding: 6px 8px; font-size: 12px; }
-.file-stack { display:flex; flex-direction:column; gap: 8px; max-height: 380px; overflow:auto; margin-top: 8px; }
+.file-stack { display:flex; flex-direction:column; gap: 8px; flex: 1; min-height: 0; overflow:auto; margin-top: 8px; }
 .file-row { display:flex; align-items:center; justify-content:space-between; gap: 12px; padding: 8px 10px; border-radius: 10px; border: 1px solid transparent; background: rgba(248, 250, 252, 0.8); transition: background 0.2s ease, border 0.2s ease; }
 .file-row.is-dir { background: rgba(59, 130, 246, 0.1); }
 .file-row.active { border-color: var(--primary); background: rgba(37, 99, 235, 0.15); }
@@ -1976,8 +2357,15 @@ button.vault-mini-card.active { border-color:#3b82f6; box-shadow: inset 0 0 0 1p
 .vault-actions { display:flex; justify-content:flex-end; gap:8px; }
 .empty-tip { color: #6b7280; font-size: 13px; padding: 8px 0; }
 .divider { height: 1px; background: #e5e7eb; margin: 12px 0; }
+.update-progress { margin-top: 8px; display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.update-progress-bar { height: 8px; background: #e5e7eb; border-radius: 999px; overflow: hidden; }
+.update-progress-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #2563eb); transition: width .2s ease; }
 .status-bar { height: 28px; border: 1px solid #d1d5db; border-radius: 8px; background: #f8fafc; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; font-size: 12px; color: #374151; z-index: 50; }
 .fixed-bottom { position: fixed; left: 232px; right: 12px; bottom: 8px; }
+.layout.terminal-layout { grid-template-columns: 1fr; }
+.layout.terminal-layout .sidebar { display: none; }
+.layout.terminal-layout .main { padding: 10px 12px 42px; }
+.layout.terminal-layout .fixed-bottom { left: 12px; }
 .status-right { display: flex; align-items: center; gap: 6px; min-width: 320px; }
 .mini-bar { width: 90px; height: 6px; background: #e5e7eb; border-radius: 999px; overflow: hidden; }
 .mini-fill { height: 100%; background: #3b82f6; transition: width .2s ease; }
@@ -2025,6 +2413,9 @@ button.vault-mini-card.active { border-color:#3b82f6; box-shadow: inset 0 0 0 1p
   .snippets-left { display: none; }
   .hosts-quick-connect { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hosts-quick-connect button { grid-column: span 1; }
+  .terminal-top-actions { flex-direction: column; align-items: stretch; }
+  .terminal-tools-right { margin-left: 0; }
+  .terminal-tools-right select { min-width: 0; width: 100%; max-width: none; }
   .snippets-header { flex-direction: column; align-items: flex-start; }
   .snippets-run-settings input { width: 100%; }
   .vault-toolbar { grid-template-columns: 1fr 1fr; }

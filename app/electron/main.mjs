@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu, clipboard } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { Client as SSHClient } from 'ssh2'
 import { SerialPort } from 'serialport'
 import sshpk from 'sshpk'
+import electronUpdater from 'electron-updater'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -21,6 +22,19 @@ const serialPorts = new Map()
 const sshSessions = new Map()
 let db
 let vaultKey = null
+const { autoUpdater } = electronUpdater
+let updaterInitialized = false
+const updateState = {
+  status: 'idle',
+  message: isDev ? '开发模式：自动更新已禁用' : '等待检查更新',
+  currentVersion: app.getVersion(),
+  latestVersion: '',
+  hasUpdate: false,
+  downloaded: false,
+  checking: false,
+  downloading: false,
+  progress: 0,
+}
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'settings.json')
@@ -316,6 +330,120 @@ function logMain(message) {
   } catch {}
 }
 
+function broadcastUpdateState() {
+  broadcast('update:status', { ...updateState })
+}
+
+function normalizeUpdateError(err) {
+  const message = String(err?.message || err || '未知错误')
+  if (/status code 401|status code 403|unauthorized/i.test(message)) {
+    return '更新源鉴权失败：请确认 GitHub release 可访问，或配置 GH_TOKEN。'
+  }
+  if (/status code 404|cannot find latest|not found/i.test(message)) {
+    return '未找到可用更新元数据：请确认发布了带 latest*.yml 的新版本。'
+  }
+  return message
+}
+
+function setUpdateState(patch) {
+  Object.assign(updateState, patch)
+  broadcastUpdateState()
+}
+
+async function checkForUpdatesNow() {
+  if (isDev) return { ok: false, error: '开发模式不支持自动更新检查' }
+  initAutoUpdater()
+  try {
+    await autoUpdater.checkForUpdates()
+    return { ok: true }
+  } catch (e) {
+    const message = normalizeUpdateError(e)
+    setUpdateState({
+      status: 'error',
+      message: `检查更新失败：${message}`,
+      checking: false,
+    })
+    logMain(`update check error: ${message}`)
+    return { ok: false, error: message }
+  }
+}
+
+function initAutoUpdater() {
+  if (updaterInitialized || isDev) return
+  updaterInitialized = true
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+
+  autoUpdater.on('checking-for-update', () => {
+    setUpdateState({
+      status: 'checking',
+      message: '正在检查更新...',
+      checking: true,
+      downloading: false,
+      progress: 0,
+    })
+  })
+
+  autoUpdater.on('update-available', (info) => {
+    setUpdateState({
+      status: 'available',
+      message: `发现新版本：${info?.version || '未知版本'}`,
+      latestVersion: info?.version || '',
+      hasUpdate: true,
+      downloaded: false,
+      checking: false,
+      downloading: false,
+      progress: 0,
+    })
+  })
+
+  autoUpdater.on('update-not-available', () => {
+    setUpdateState({
+      status: 'idle',
+      message: `当前已是最新版本（${app.getVersion()}）`,
+      latestVersion: app.getVersion(),
+      hasUpdate: false,
+      downloaded: false,
+      checking: false,
+      downloading: false,
+      progress: 0,
+    })
+  })
+
+  autoUpdater.on('download-progress', (progress) => {
+    setUpdateState({
+      status: 'downloading',
+      message: `更新下载中：${Math.round(progress?.percent || 0)}%`,
+      downloading: true,
+      progress: Number(progress?.percent || 0),
+    })
+  })
+
+  autoUpdater.on('update-downloaded', (info) => {
+    setUpdateState({
+      status: 'downloaded',
+      message: `更新已下载完成：${info?.version || ''}，可一键重启安装`,
+      latestVersion: info?.version || updateState.latestVersion,
+      hasUpdate: true,
+      downloaded: true,
+      checking: false,
+      downloading: false,
+      progress: 100,
+    })
+  })
+
+  autoUpdater.on('error', (e) => {
+    const message = normalizeUpdateError(e)
+    setUpdateState({
+      status: 'error',
+      message: `更新异常：${message}`,
+      checking: false,
+      downloading: false,
+    })
+    logMain(`autoUpdater error: ${message}`)
+  })
+}
+
 function buildAppMenu() {
   const template = [
     {
@@ -407,8 +535,15 @@ app.whenReady().then(() => {
     buildAppMenu()
     initDb()
     logMain('initDb ok')
+    initAutoUpdater()
+    broadcastUpdateState()
     createWindow()
     logMain('createWindow called')
+    if (!isDev) {
+      setTimeout(() => {
+        checkForUpdatesNow().catch((e) => logMain(`auto check failed: ${e?.message || e}`))
+      }, 4000)
+    }
   } catch (e) {
     try {
       const p = path.join(app.getPath('userData'), 'fatal.log')
@@ -448,6 +583,49 @@ ipcMain.handle('app:set-storage-folder', async (_event, payload) => {
   settings.dbPath = nextDbPath
   writeSettings(settings)
   return { ok: true, dbPath: nextDbPath, restartRequired: true }
+})
+
+ipcMain.handle('clipboard:read', async () => {
+  try {
+    return { ok: true, text: clipboard.readText() }
+  } catch (e) {
+    return { ok: false, error: e?.message || '读取剪贴板失败' }
+  }
+})
+
+ipcMain.handle('clipboard:write', async (_event, payload) => {
+  try {
+    clipboard.writeText(String(payload?.text || ''))
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e?.message || '写入剪贴板失败' }
+  }
+})
+
+ipcMain.handle('update:get-state', async () => ({ ok: true, ...updateState }))
+
+ipcMain.handle('update:check', async () => {
+  return await checkForUpdatesNow()
+})
+
+ipcMain.handle('update:download', async () => {
+  if (isDev) return { ok: false, error: '开发模式不支持下载更新' }
+  initAutoUpdater()
+  try {
+    await autoUpdater.downloadUpdate()
+    return { ok: true }
+  } catch (e) {
+    const message = normalizeUpdateError(e)
+    setUpdateState({ status: 'error', message: `下载更新失败：${message}`, downloading: false })
+    return { ok: false, error: message }
+  }
+})
+
+ipcMain.handle('update:install', async () => {
+  if (isDev) return { ok: false, error: '开发模式不支持安装更新' }
+  if (!updateState.downloaded) return { ok: false, error: '更新包未下载完成' }
+  setImmediate(() => autoUpdater.quitAndInstall(false, true))
+  return { ok: true }
 })
 
 ipcMain.handle('hosts:list', async () => ({ ok: true, items: db.prepare('SELECT * FROM hosts ORDER BY updated_at DESC').all() }))
