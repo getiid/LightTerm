@@ -66,6 +66,7 @@
       "oneClick": true,
       "perMachine": false,
       "allowElevation": true,
+      "deleteAppDataOnUninstall": true,
       "include": "build/installer.nsh"
     },
     "linux": {

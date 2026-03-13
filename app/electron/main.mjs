@@ -995,8 +995,32 @@ ipcMain.handle('ssh:disconnect', async (_event, payload) => {
   return { ok: true }
 })
 
+const listWindowsDriveRoots = () => {
+  const roots = []
+  for (let code = 65; code <= 90; code += 1) {
+    const letter = String.fromCharCode(code)
+    const driveRoot = `${letter}:\\`
+    try {
+      if (!fs.existsSync(driveRoot)) continue
+      roots.push({
+        name: `${letter}:`,
+        isDir: true,
+        path: driveRoot,
+        size: 0,
+        createdAt: 0,
+        modifiedAt: 0,
+      })
+    } catch {}
+  }
+  return roots
+}
+
 ipcMain.handle('localfs:list', async (_event, payload) => {
-  const localPath = payload?.localPath || os.homedir()
+  const requestedPath = typeof payload?.localPath === 'string' ? payload.localPath.trim() : ''
+  if (process.platform === 'win32' && !requestedPath) {
+    return { ok: true, path: '', items: listWindowsDriveRoots() }
+  }
+  const localPath = requestedPath || os.homedir()
   try {
     const items = fs.readdirSync(localPath, { withFileTypes: true }).map((d) => {
       const fullPath = path.join(localPath, d.name)

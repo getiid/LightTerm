@@ -205,6 +205,35 @@ const rightLinkLabel = computed(() => {
   return hostLabelById(sftpHostId.value)
 })
 
+const isWindowsClient = computed(() => {
+  if (typeof navigator === 'undefined') return false
+  return /win/i.test(navigator.platform || '')
+})
+
+const leftLocalPathDisplay = computed(() => (isWindowsClient.value ? (localPath.value || '盘符列表') : (localPath.value || '/')))
+const rightLocalPathDisplay = computed(() => (isWindowsClient.value ? (rightLocalPath.value || '盘符列表') : (rightLocalPath.value || '/')))
+
+const getLocalParentPath = (rawPath: string) => {
+  const source = String(rawPath || '').trim()
+  if (!source) return ''
+
+  const normalized = source.replace(/\\/g, '/').replace(/\/+$/, '')
+  const isWindowsDrivePath = /^[a-zA-Z]:/.test(normalized)
+
+  if (isWindowsDrivePath) {
+    if (/^[a-zA-Z]:$/.test(normalized)) return ''
+    const lastSlash = normalized.lastIndexOf('/')
+    if (lastSlash <= 2) return ''
+    return normalized.slice(0, lastSlash)
+  }
+
+  if (normalized === '/') return '/'
+  const lastSlash = normalized.lastIndexOf('/')
+  if (lastSlash < 0) return ''
+  if (lastSlash === 0) return '/'
+  return normalized.slice(0, lastSlash)
+}
+
 const vaultMaster = ref('')
 const vaultStatus = ref('')
 const bridgeReady = ref(typeof window !== 'undefined' && !!window.lightterm)
@@ -387,8 +416,8 @@ const initTerminal = () => {
       background: '#f8fafc',
       foreground: '#111827',
       cursor: '#2563eb',
-      selectionBackground: '#60a5fa99',
-      selectionInactiveBackground: '#93c5fd66',
+      selectionBackground: '#2563ebc0',
+      selectionInactiveBackground: '#60a5fa88',
     },
   })
   fitAddon = new FitAddon()
@@ -740,7 +769,9 @@ const handleTerminalHotkeys = (event: KeyboardEvent) => {
   if (!focusTerminal.value) return
   const target = event.target as HTMLElement | null
   const tagName = target?.tagName || ''
-  if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') return
+  const isXtermHelper = tagName === 'TEXTAREA' && !!target?.classList?.contains('xterm-helper-textarea')
+  const isFormEditor = tagName === 'INPUT' || tagName === 'SELECT' || (tagName === 'TEXTAREA' && !isXtermHelper)
+  if (isFormEditor) return
 
   const hasMeta = event.metaKey || event.ctrlKey
   if (!hasMeta) return
@@ -748,16 +779,19 @@ const handleTerminalHotkeys = (event: KeyboardEvent) => {
 
   if (key === 'c' && terminal?.hasSelection()) {
     event.preventDefault()
+    event.stopPropagation()
     void copyTerminalSelection()
     return
   }
   if (key === 'v') {
     event.preventDefault()
+    event.stopPropagation()
     void pasteToTerminal()
     return
   }
   if (key === 'a') {
     event.preventDefault()
+    event.stopPropagation()
     selectAllTerminal()
   }
 }
@@ -1163,10 +1197,13 @@ const localGoUp = async () => {
     await loadLeftSftp()
     return
   }
-  if (!localPath.value) return
-  const parts = localPath.value.split('/').filter(Boolean)
-  const parent = parts.length ? `/${parts.slice(0, -1).join('/')}` || '/' : '/'
-  localPath.value = parent
+  if (!localPath.value) {
+    if (isWindowsClient.value) {
+      await loadLocalFs()
+    }
+    return
+  }
+  localPath.value = getLocalParentPath(localPath.value)
   await loadLocalFs()
 }
 const openRightLocalItem = async (item: any) => {
@@ -1244,8 +1281,12 @@ const onLocalDrop = async () => {
     return
   }
   if (!sftpDragRemoteFile.value) return
+  if (isWindowsClient.value && !localPath.value) {
+    sftpStatus.value = '请先进入左侧具体盘符目录，再接收下载文件'
+    return
+  }
   const remoteFile = `${sftpPath.value.replace(/\/$/, '')}/${sftpDragRemoteFile.value}`
-  const res = await window.lightterm.sftpDownloadToLocal({ ...config, remoteFile, localDir: localPath.value || '/', filename: sftpDragRemoteFile.value })
+  const res = await window.lightterm.sftpDownloadToLocal({ ...config, remoteFile, localDir: localPath.value || '', filename: sftpDragRemoteFile.value })
   sftpStatus.value = res.ok ? `拖拽下载成功：${res.filePath}` : `拖拽下载失败：${res.error}`
   sftpDragRemoteFile.value = ''
   if (res.ok) await loadLocalFs()
@@ -1387,9 +1428,13 @@ const promptMkdirSftp = async () => {
 }
 const remoteGoUp = async () => {
   if (rightPanelMode.value === 'local') {
-    if (!rightLocalPath.value) return
-    const parts = rightLocalPath.value.split('/').filter(Boolean)
-    rightLocalPath.value = parts.length ? `/${parts.slice(0, -1).join('/')}` || '/' : '/'
+    if (!rightLocalPath.value) {
+      if (isWindowsClient.value) {
+        await loadRightLocalFs()
+      }
+      return
+    }
+    rightLocalPath.value = getLocalParentPath(rightLocalPath.value)
     await loadRightLocalFs()
     return
   }
@@ -1858,11 +1903,11 @@ onMounted(async () => {
   })
   window.lightterm.onUpdateStatus((payload) => mergeUpdateState(payload))
   window.addEventListener('click', hideAllMenus)
-  window.addEventListener('keydown', handleTerminalHotkeys)
+  window.addEventListener('keydown', handleTerminalHotkeys, true)
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleTerminalHotkeys)
+  window.removeEventListener('keydown', handleTerminalHotkeys, true)
   window.removeEventListener('click', hideAllMenus)
 })
 </script>
@@ -2039,12 +2084,12 @@ onBeforeUnmount(() => {
             <span class="path-chip">
               <b>左侧连接</b>
               <span>{{ leftLinkLabel }}</span>
-              <small>{{ leftPanelMode === 'local' ? (localPath || '/') : leftSftpPath }}</small>
+              <small>{{ leftPanelMode === 'local' ? leftLocalPathDisplay : leftSftpPath }}</small>
             </span>
             <span class="path-chip">
               <b>右侧连接</b>
               <span>{{ rightLinkLabel }}</span>
-              <small>{{ rightPanelMode === 'local' ? (rightLocalPath || '/') : sftpPath }}</small>
+              <small>{{ rightPanelMode === 'local' ? rightLocalPathDisplay : sftpPath }}</small>
             </span>
           </div>
         </div>
