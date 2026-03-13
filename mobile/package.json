@@ -1,9 +1,9 @@
 {
-  "name": "mobile",
-  "version": "1.0.0",
+  "name": "astrashell-mobile",
+  "version": "0.1.0",
   "main": "index.ts",
   "scripts": {
-    "start": "expo start",
+    "start": "expo start --clear",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web"

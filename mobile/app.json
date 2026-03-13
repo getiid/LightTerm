@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "mobile",
-    "slug": "mobile",
-    "version": "1.0.0",
+    "name": "AstraShell Mobile",
+    "slug": "astrashell-mobile",
+    "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -12,9 +12,11 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "ai.astrashell.mobile"
     },
     "android": {
+      "package": "ai.astrashell.mobile",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",

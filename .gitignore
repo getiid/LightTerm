@@ -11,3 +11,6 @@ app/release/
 
 # optional local runtime data
 *.db
+
+# local handoff notes (keep local only)
+资料/
