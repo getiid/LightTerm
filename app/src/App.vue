@@ -11,7 +11,7 @@ const termEl = ref<HTMLElement | null>(null)
 
 const DEFAULT_CATEGORY = '默认'
 const ALL_CATEGORY = '全部'
-const SNIPPET_STORAGE_KEY = 'astrashell.snippets.v1'
+const LEGACY_SNIPPET_STORAGE_KEY = 'astrashell.snippets.v1'
 const SNIPPET_DEFAULT_CATEGORY = '部署'
 const SNIPPET_ALL_CATEGORY = '全部'
 
@@ -488,36 +488,61 @@ const buildDefaultDockerSnippet = (): SnippetItem => ({
   updatedAt: Date.now(),
 })
 
-const persistSnippets = () => {
-  localStorage.setItem(
-    SNIPPET_STORAGE_KEY,
-    JSON.stringify({
-      items: snippetItems.value,
-      extraCategories: snippetExtraCategories.value,
-    })
-  )
-}
-
-const restoreSnippets = () => {
+const readLegacySnippets = () => {
   try {
-    const raw = localStorage.getItem(SNIPPET_STORAGE_KEY)
-    if (!raw) {
-      snippetItems.value = [buildDefaultDockerSnippet()]
-      persistSnippets()
-      return
-    }
+    const raw = localStorage.getItem(LEGACY_SNIPPET_STORAGE_KEY)
+    if (!raw) return null
     const parsed = JSON.parse(raw) as { items?: SnippetItem[]; extraCategories?: string[] }
-    snippetItems.value = Array.isArray(parsed?.items) ? parsed.items : []
-    snippetExtraCategories.value = Array.isArray(parsed?.extraCategories) ? parsed.extraCategories : []
-    if (snippetItems.value.length === 0) {
-      snippetItems.value = [buildDefaultDockerSnippet()]
-      persistSnippets()
+    return {
+      items: Array.isArray(parsed?.items) ? parsed.items : [],
+      extraCategories: Array.isArray(parsed?.extraCategories) ? parsed.extraCategories : [],
     }
   } catch {
-    snippetItems.value = [buildDefaultDockerSnippet()]
-    snippetExtraCategories.value = []
-    persistSnippets()
+    return null
   }
+}
+
+const applySnippetState = (items: SnippetItem[], extraCategories: string[]) => {
+  snippetItems.value = [...items].sort((a, b) => b.updatedAt - a.updatedAt)
+  snippetExtraCategories.value = [...new Set(extraCategories.filter(Boolean))]
+}
+
+const saveSnippetState = async (items = snippetItems.value, extraCategories = snippetExtraCategories.value) => {
+  const res = await window.lightterm.snippetsSetState({ items, extraCategories })
+  if (!res.ok) {
+    snippetStatus.value = `代码片段保存失败：${res.error || '未知错误'}`
+    return false
+  }
+  applySnippetState((res.items || []) as SnippetItem[], res.extraCategories || [])
+  return true
+}
+
+const restoreSnippets = async () => {
+  const res = await window.lightterm.snippetsGetState()
+  if (!res.ok) {
+    applySnippetState([buildDefaultDockerSnippet()], [])
+    await saveSnippetState()
+    return
+  }
+
+  const remoteItems = Array.isArray(res.items) ? (res.items as SnippetItem[]) : []
+  const remoteCategories = Array.isArray(res.extraCategories) ? res.extraCategories : []
+  if (remoteItems.length > 0 || remoteCategories.length > 0) {
+    applySnippetState(remoteItems, remoteCategories)
+    return
+  }
+
+  const legacy = readLegacySnippets()
+  if (legacy && (legacy.items.length > 0 || legacy.extraCategories.length > 0)) {
+    applySnippetState(legacy.items, legacy.extraCategories)
+    await saveSnippetState()
+    try { localStorage.removeItem(LEGACY_SNIPPET_STORAGE_KEY) } catch {}
+    snippetStatus.value = '已迁移本机旧版代码片段到共享数据库'
+    return
+  }
+
+  applySnippetState([buildDefaultDockerSnippet()], [])
+  await saveSnippetState()
 }
 
 const openSnippetEditor = (item: SnippetItem) => {
@@ -537,7 +562,7 @@ const beginAddSnippetCategory = () => {
   newSnippetCategoryName.value = ''
 }
 
-const addSnippetCategory = () => {
+const addSnippetCategory = async () => {
   const name = newSnippetCategoryName.value.trim()
   if (!name) {
     newSnippetCategoryInputVisible.value = false
@@ -545,7 +570,7 @@ const addSnippetCategory = () => {
   }
   if (!snippetCategories.value.includes(name) && !snippetExtraCategories.value.includes(name)) {
     snippetExtraCategories.value.push(name)
-    persistSnippets()
+    await saveSnippetState()
   }
   snippetCategory.value = name
   snippetEdit.value.category = name
@@ -553,7 +578,7 @@ const addSnippetCategory = () => {
   newSnippetCategoryInputVisible.value = false
 }
 
-const saveSnippet = () => {
+const saveSnippet = async () => {
   const draft = snippetEdit.value
   const name = draft.name.trim()
   const commands = draft.commands.trim()
@@ -584,11 +609,11 @@ const saveSnippet = () => {
   }
   selectedSnippetId.value = next.id
   snippetEdit.value = { ...next }
-  persistSnippets()
+  await saveSnippetState()
   snippetStatus.value = `片段已保存：${next.name}`
 }
 
-const deleteSnippet = () => {
+const deleteSnippet = async () => {
   const id = selectedSnippetId.value || snippetEdit.value.id
   if (!id) return
   const target = snippetItems.value.find((item) => item.id === id)
@@ -596,7 +621,7 @@ const deleteSnippet = () => {
   const confirmed = window.confirm(`确定删除代码片段「${target.name}」吗？`)
   if (!confirmed) return
   snippetItems.value = snippetItems.value.filter((item) => item.id !== id)
-  persistSnippets()
+  await saveSnippetState()
   clearSnippetEditor()
   snippetStatus.value = '片段已删除'
 }
@@ -1890,7 +1915,7 @@ onMounted(async () => {
   startupGateMode.value = 'loading'
   startupGateError.value = ''
   restoreSshTabs()
-  restoreSnippets()
+  await restoreSnippets()
   initTerminal()
   await loadSerialPorts()
   await refreshHosts()
@@ -1923,12 +1948,12 @@ onBeforeUnmount(() => {
     <aside class="sidebar">
       <div class="brand"><img src="/logo-astrashell.png?v=2" alt="AstraShell" class="brand-logo" /> AstraShell</div>
       <ul class="sidebar-nav">
-        <li :class="{ active: nav === 'hosts' }" @click="focusTerminal = false; nav = 'hosts'"><Server :size="16" /> 主机</li>
-        <li :class="{ active: nav === 'sftp' }" @click="focusTerminal = false; nav = 'sftp'"><FolderTree :size="16" /> SFTP</li>
+        <li :class="{ active: nav === 'hosts' }" @click="focusTerminal = false; nav = 'hosts'"><Server :size="16" /> 主机管理</li>
+        <li :class="{ active: nav === 'sftp' }" @click="focusTerminal = false; nav = 'sftp'"><FolderTree :size="16" /> 文件传输</li>
         <li :class="{ active: nav === 'snippets' }" @click="focusTerminal = false; nav = 'snippets'"><Pencil :size="16" /> 代码片段</li>
-        <li :class="{ active: nav === 'serial' }" @click="focusTerminal = false; nav = 'serial'"><Cable :size="16" /> 串口</li>
-        <li :class="{ active: nav === 'vault' }" @click="focusTerminal = false; nav = 'vault'"><KeyRound :size="16" /> 密钥仓库</li>
-        <li :class="{ active: nav === 'settings' }" @click="focusTerminal = false; nav = 'settings'"><Settings :size="16" /> 设置</li>
+        <li :class="{ active: nav === 'serial' }" @click="focusTerminal = false; nav = 'serial'"><Cable :size="16" /> 串口工具</li>
+        <li :class="{ active: nav === 'vault' }" @click="focusTerminal = false; nav = 'vault'"><KeyRound :size="16" /> 密钥管理</li>
+        <li :class="{ active: nav === 'settings' }" @click="focusTerminal = false; nav = 'settings'"><Settings :size="16" /> 应用设置</li>
       </ul>
       <div class="sidebar-footer">
         <img src="/logo-astrashell.png?v=2" alt="AstraShell Logo" class="sidebar-footer-logo" />
@@ -1956,14 +1981,14 @@ onBeforeUnmount(() => {
           </select>
           <button class="muted" @click="runTerminalSnippet" :disabled="snippetRunning">执行片段</button>
           <button class="ghost" @click="sendSnippetRawToTerminal">发送原文</button>
-          <button class="ghost" @click="nav = 'snippets'; focusTerminal = false">管理片段</button>
+          <button class="ghost" @click="nav = 'snippets'; focusTerminal = false">打开片段</button>
         </div>
       </div>
 
       <section v-if="!focusTerminal && nav === 'hosts'" class="panel hosts-panel">
         <div class="hosts-header">
           <div>
-            <h3>SSH 管理台</h3>
+            <h3>主机管理</h3>
             <p class="hosts-header-sub">快速筛选主机并在右侧编辑详情</p>
           </div>
           <div class="hosts-quick-connect">
@@ -2083,7 +2108,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="!focusTerminal && nav === 'sftp'" class="panel sftp-panel">
-        <h3>SFTP 双栏（本地/远程）</h3>
+        <h3>SFTP 文件传输</h3>
         <p>{{ sftpStatus }} ｜ {{ sftpConnected ? '已连接' : '未连接' }} ｜ 传输模式：二进制</p>
         <div class="split-head">
           <div class="head-left">
@@ -2294,7 +2319,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="!focusTerminal && nav === 'serial'" class="panel">
-        <h3>串口连接与发送面板</h3>
+        <h3>串口工具</h3>
         <div class="grid">
           <select v-model="serialForm.path"><option value="">选择串口</option><option v-for="p in serialPorts" :key="p.path" :value="p.path">{{ p.path }}</option></select>
           <input v-model.number="serialForm.baudRate" type="number" placeholder="波特率" />
@@ -2312,7 +2337,7 @@ onBeforeUnmount(() => {
 
       <section v-else-if="!focusTerminal && nav === 'vault'" class="panel vault-panel">
         <div class="vault-header">
-          <h3>密钥仓库（主密码 + 加密）</h3>
+          <h3>密钥管理</h3>
           <div class="vault-toolbar">
             <input v-model="vaultMaster" type="password" placeholder="主密码" />
             <button v-if="!vaultInitialized" @click="initVault">初始化仓库</button>
@@ -2380,7 +2405,10 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="!focusTerminal && nav === 'settings'" class="panel">
-        <h3>软件更新（GitHub Release）</h3>
+        <h3>应用设置</h3>
+        <p class="hint">统一管理应用更新、本地数据库目录和共享文件夹同步状态。</p>
+        <div class="divider"></div>
+        <h3>应用更新</h3>
         <p>{{ updateStatusText }}</p>
         <div class="grid update-grid">
           <button class="muted" :disabled="updateActionBusy || updateInfo.checking" @click="checkAppUpdate">检查更新</button>
@@ -2394,7 +2422,7 @@ onBeforeUnmount(() => {
         </div>
         <p class="hint">发布新版本到 GitHub Release 后，应用启动会自动检查；也可手动检查并一键更新。</p>
         <div class="divider"></div>
-        <h3>本地存储设置（单机版）</h3>
+        <h3>本地存储</h3>
         <p>当前数据库：{{ storageDbPath }}</p>
         <div class="grid">
           <input v-model="storageFolderInput" placeholder="选择 iCloud/共享文件夹目录" />
@@ -2405,7 +2433,7 @@ onBeforeUnmount(() => {
         <p>{{ storageMsg }}</p>
         <p class="hint">建议：跨设备同步时，只让一台设备在同一时刻写入数据库，避免冲突。</p>
         <div class="divider"></div>
-        <h3>本地同步（共享文件夹模式）</h3>
+        <h3>共享同步</h3>
         <p>{{ syncStatusText }}</p>
         <p>当前数据库：{{ storageDbPath }}</p>
         <div class="grid">

@@ -20,6 +20,8 @@ declare global {
       hostsList: () => Promise<{ ok: boolean; items?: any[] }>
       hostsSave: (payload: any) => Promise<{ ok: boolean; id?: string; error?: string }>
       hostsDelete: (payload: { id: string }) => Promise<{ ok: boolean; error?: string }>
+      snippetsGetState: () => Promise<{ ok: boolean; items?: any[]; extraCategories?: string[]; error?: string }>
+      snippetsSetState: (payload: { items: any[]; extraCategories: string[] }) => Promise<{ ok: boolean; items?: any[]; extraCategories?: string[]; error?: string }>
 
       vaultStatus: () => Promise<{ ok: boolean; initialized: boolean; unlocked: boolean }>
       vaultSetMaster: (payload: { masterPassword: string }) => Promise<{ ok: boolean; error?: string }>

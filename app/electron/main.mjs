@@ -129,6 +129,8 @@ class JsonDB {
     this.filePath = filePath
     this.data = {
       hosts: [],
+      snippets: [],
+      snippet_meta: { extra_categories: [], updated_at: 0 },
       vault_meta: null,
       vault_keys: [],
       sync_account: null,
@@ -269,6 +271,48 @@ function connectConfigFromPayload(payload) {
   }
 }
 
+function normalizeSnippetState(payload) {
+  const now = Date.now()
+  const items = Array.isArray(payload?.items)
+    ? payload.items
+      .map((item) => {
+        const name = String(item?.name || '').trim()
+        const commands = String(item?.commands || '')
+        if (!name || !commands.trim()) return null
+        const createdAt = Number(item?.createdAt || now)
+        const updatedAt = Number(item?.updatedAt || now)
+        return {
+          id: String(item?.id || uuidv4()),
+          name,
+          category: String(item?.category || '部署').trim() || '部署',
+          hostId: String(item?.hostId || '').trim(),
+          description: String(item?.description || '').trim(),
+          commands,
+          createdAt: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : now,
+          updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : now,
+        }
+      })
+      .filter(Boolean)
+    : []
+
+  const seen = new Set()
+  const dedupedItems = items.filter((item) => {
+    if (seen.has(item.id)) return false
+    seen.add(item.id)
+    return true
+  })
+
+  const extraCategories = Array.isArray(payload?.extraCategories)
+    ? [...new Set(payload.extraCategories.map((value) => String(value || '').trim()).filter(Boolean))]
+    : []
+
+  return {
+    items: dedupedItems.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)),
+    extraCategories,
+    updatedAt: now,
+  }
+}
+
 async function getSerialPortCtor() {
   if (SerialPortCtor) return SerialPortCtor
   try {
@@ -381,6 +425,23 @@ function initDb() {
       op TEXT NOT NULL,
       payload TEXT,
       created_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS snippets (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      category TEXT,
+      host_id TEXT,
+      description TEXT,
+      commands TEXT NOT NULL,
+      created_at INTEGER,
+      updated_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS snippet_meta (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      extra_categories TEXT,
+      updated_at INTEGER
     );
   `)
 }
@@ -1025,6 +1086,32 @@ ipcMain.handle('hosts:delete', async (_event, payload) => {
   db.prepare('DELETE FROM hosts WHERE id = ?').run(payload.id)
   enqueueSync('hosts', payload.id, 'delete', { id: payload.id })
   return { ok: true }
+})
+
+ipcMain.handle('snippets:get-state', async () => {
+  const items = Array.isArray(db.data.snippets)
+    ? [...db.data.snippets].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    : []
+  const extraCategories = Array.isArray(db.data.snippet_meta?.extra_categories)
+    ? [...db.data.snippet_meta.extra_categories]
+    : []
+  return { ok: true, items, extraCategories }
+})
+
+ipcMain.handle('snippets:set-state', async (_event, payload) => {
+  const normalized = normalizeSnippetState(payload)
+  db.data.snippets = normalized.items
+  db.data.snippet_meta = {
+    extra_categories: normalized.extraCategories,
+    updated_at: normalized.updatedAt,
+  }
+  db.save()
+  enqueueSync('snippets', 'state', 'replace', {
+    count: normalized.items.length,
+    extraCategories: normalized.extraCategories,
+    updatedAt: normalized.updatedAt,
+  })
+  return { ok: true, items: normalized.items, extraCategories: normalized.extraCategories }
 })
 
 ipcMain.handle('vault:status', async () => {

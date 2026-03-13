@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('lightterm', {
   hostsList: () => ipcRenderer.invoke('hosts:list'),
   hostsSave: (payload) => ipcRenderer.invoke('hosts:save', payload),
   hostsDelete: (payload) => ipcRenderer.invoke('hosts:delete', payload),
+  snippetsGetState: () => ipcRenderer.invoke('snippets:get-state'),
+  snippetsSetState: (payload) => ipcRenderer.invoke('snippets:set-state', payload),
 
   vaultStatus: () => ipcRenderer.invoke('vault:status'),
   vaultSetMaster: (payload) => ipcRenderer.invoke('vault:set-master', payload),
