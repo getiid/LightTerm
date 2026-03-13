@@ -1,7 +1,7 @@
 {
   "name": "astrashell-desktop",
   "private": true,
-  "version": "0.2.7",
+  "version": "0.2.8",
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {
@@ -61,6 +61,12 @@
       "target": [
         "nsis"
       ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": true,
+      "include": "build/installer.nsh"
     },
     "linux": {
       "target": [
