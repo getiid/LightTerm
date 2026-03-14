@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AstraShell | 开源终端工作台</title>
+    <meta
+      name="description"
+      content="AstraShell 是一个开源、免费、跨平台的 SSH/SFTP 终端工作台。支持多标签连接、代码片段、密钥管理与自动更新。"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;800&family=Outfit:wght@500;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #f4f7fb;
+        --bg-strong: #ecf2fb;
+        --card: rgba(255, 255, 255, 0.86);
+        --text: #10213e;
+        --muted: #516281;
+        --primary: #0b5bff;
+        --primary-strong: #0d3fb7;
+        --line: rgba(16, 33, 62, 0.12);
+        --ok: #0b9a6a;
+        --radius: 18px;
+        --shadow: 0 24px 60px rgba(16, 33, 62, 0.14);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 8% 10%, #d7e8ff 0%, transparent 32%),
+          radial-gradient(circle at 92% 80%, #d9f3ff 0%, transparent 36%),
+          linear-gradient(150deg, #f7fbff 0%, #eef3fb 55%, #ebf2fb 100%);
+        font-family: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+        min-height: 100vh;
+      }
+
+      .noise {
+        position: fixed;
+        inset: 0;
+        opacity: 0.06;
+        pointer-events: none;
+        background-image: radial-gradient(rgba(0, 0, 0, 0.26) 0.4px, transparent 0.4px);
+        background-size: 3px 3px;
+      }
+
+      .shell {
+        width: min(1140px, 92vw);
+        margin: 28px auto 40px;
+      }
+
+      .hero {
+        position: relative;
+        overflow: hidden;
+        padding: 32px;
+        border-radius: 28px;
+        border: 1px solid var(--line);
+        background: linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(244, 248, 255, 0.78));
+        box-shadow: var(--shadow);
+      }
+
+      .hero::after {
+        content: '';
+        position: absolute;
+        right: -90px;
+        top: -120px;
+        width: 320px;
+        height: 320px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(11, 91, 255, 0.18), rgba(11, 91, 255, 0));
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 12px;
+      }
+
+      .brand img {
+        width: 48px;
+        height: 48px;
+      }
+
+      .brand-name {
+        font: 800 30px/1 'Outfit', 'Noto Sans SC', sans-serif;
+        letter-spacing: 0.4px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border-radius: 999px;
+        border: 1px solid rgba(11, 154, 106, 0.26);
+        color: var(--ok);
+        background: rgba(11, 154, 106, 0.08);
+        padding: 7px 12px;
+        font-size: 13px;
+      }
+
+      h1 {
+        margin: 16px 0 12px;
+        max-width: 760px;
+        font: 800 42px/1.16 'Outfit', 'Noto Sans SC', sans-serif;
+      }
+
+      .lead {
+        margin: 0;
+        max-width: 780px;
+        color: var(--muted);
+        font-size: 17px;
+        line-height: 1.72;
+      }
+
+      .cta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 26px;
+      }
+
+      .btn {
+        border: 1px solid transparent;
+        border-radius: 12px;
+        padding: 11px 16px;
+        text-decoration: none;
+        color: #fff;
+        background: linear-gradient(120deg, var(--primary), #2e85ff);
+        font-weight: 700;
+        font-size: 14px;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 28px rgba(11, 91, 255, 0.3);
+      }
+
+      .btn.ghost {
+        color: var(--text);
+        border-color: var(--line);
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .status {
+        margin-top: 16px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 16px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--card);
+        backdrop-filter: blur(6px);
+        box-shadow: 0 10px 30px rgba(16, 33, 62, 0.08);
+      }
+
+      .feature {
+        grid-column: span 4;
+        padding: 18px;
+      }
+
+      .feature h3 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+
+      .feature p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.7;
+        font-size: 14px;
+      }
+
+      .showcase {
+        grid-column: span 7;
+        padding: 16px;
+      }
+
+      .showcase img {
+        width: 100%;
+        display: block;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+      }
+
+      .manifesto {
+        grid-column: span 5;
+        padding: 18px;
+      }
+
+      .manifesto h2 {
+        margin: 0 0 10px;
+        font: 800 26px/1.22 'Outfit', 'Noto Sans SC', sans-serif;
+      }
+
+      .manifesto p {
+        margin: 0 0 10px;
+        color: var(--muted);
+        line-height: 1.72;
+        font-size: 15px;
+      }
+
+      .manifesto ul {
+        margin: 12px 0 0;
+        padding-left: 18px;
+      }
+
+      .manifesto li {
+        margin-bottom: 8px;
+        line-height: 1.62;
+      }
+
+      .foot {
+        margin-top: 16px;
+        text-align: center;
+        color: #5f7191;
+        font-size: 13px;
+      }
+
+      @media (max-width: 980px) {
+        h1 {
+          font-size: 34px;
+        }
+        .feature,
+        .showcase,
+        .manifesto {
+          grid-column: span 12;
+        }
+      }
+
+      @media (max-width: 680px) {
+        .hero {
+          padding: 22px;
+        }
+        .brand-name {
+          font-size: 26px;
+        }
+        h1 {
+          font-size: 29px;
+        }
+        .lead {
+          font-size: 15px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="noise"></div>
+    <main class="shell">
+      <section class="hero">
+        <div class="brand">
+          <img src="./screenshots/astrashell-logo.svg" alt="AstraShell Logo" />
+          <div class="brand-name">AstraShell</div>
+        </div>
+        <span class="badge">开源 · 免费 · 无付费功能</span>
+        <h1>一站式 SSH / SFTP 终端工作台，为开发者而生</h1>
+        <p class="lead">
+          多标签 SSH、文件传输、代码片段、密钥管理、自动更新。AstraShell 由社区共同维护，目标是把跨平台远程运维体验做得更流畅、更稳定、更漂亮。
+        </p>
+        <div class="cta-row">
+          <a id="download-win" class="btn" href="https://github.com/getiid/AstraShell/releases/latest" target="_blank" rel="noopener">下载 Windows 安装包</a>
+          <a id="download-mac" class="btn ghost" href="https://github.com/getiid/AstraShell/releases/latest" target="_blank" rel="noopener">下载 macOS 安装包</a>
+          <a class="btn ghost" href="https://github.com/getiid/AstraShell/releases/latest" target="_blank" rel="noopener">查看全部发布</a>
+          <a class="btn ghost" href="https://github.com/getiid/AstraShell" target="_blank" rel="noopener">GitHub 仓库</a>
+        </div>
+        <div id="release-status" class="status">正在读取 GitHub 最新版本...</div>
+      </section>
+
+      <section class="grid">
+        <article class="feature card">
+          <h3>多服务器并行连接</h3>
+          <p>返回模块视图不断线，关闭标签才断开会话。不同主机会话严格隔离，避免串线误操作。</p>
+        </article>
+        <article class="feature card">
+          <h3>终端中文更稳定</h3>
+          <p>内置 UTF-8 / GB18030 解码切换，远程查看中文日志与文本时更容易恢复正确显示。</p>
+        </article>
+        <article class="feature card">
+          <h3>轻量但完整</h3>
+          <p>从 SSH 到 SFTP，再到密钥管理和常用脚本片段，开箱即可覆盖日常服务器维护流程。</p>
+        </article>
+        <article class="showcase card">
+          <img src="./screenshots/dashboard-2026-03-13.svg" alt="AstraShell 应用截图" />
+        </article>
+        <article class="manifesto card">
+          <h2>开源协作公约</h2>
+          <p>欢迎每一位开发者一起动手，把 AstraShell 做得更稳定、更易用、更有审美。</p>
+          <ul>
+            <li>项目永久开源、永久免费，不做任何形式的功能收费。</li>
+            <li>官方主线与官方分支不接受任何“收费版/付费分支/付费阉割版”方向。</li>
+            <li>所有改进优先回馈社区，让每位用户都能平等获得完整能力。</li>
+          </ul>
+          <div class="cta-row">
+            <a class="btn" href="https://github.com/getiid/AstraShell/issues" target="_blank" rel="noopener">提交建议 / Bug</a>
+            <a class="btn ghost" href="https://github.com/getiid/AstraShell/pulls" target="_blank" rel="noopener">参与贡献 PR</a>
+          </div>
+        </article>
+      </section>
+
+      <div class="foot">AstraShell · Community Driven · Open Source Forever</div>
+    </main>
+
+    <script>
+      (async () => {
+        const status = document.getElementById('release-status');
+        const win = document.getElementById('download-win');
+        const mac = document.getElementById('download-mac');
+        const fallback = 'https://github.com/getiid/AstraShell/releases/latest';
+        try {
+          const res = await fetch('https://api.github.com/repos/getiid/AstraShell/releases/latest', {
+            headers: { Accept: 'application/vnd.github+json' },
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const release = await res.json();
+          const assets = Array.isArray(release.assets) ? release.assets : [];
+          const winAsset = assets.find((a) => String(a.name || '').toLowerCase().endsWith('.exe'));
+          const macAsset = assets.find((a) => String(a.name || '').toLowerCase().endsWith('.dmg'));
+
+          win.href = winAsset?.browser_download_url || fallback;
+          mac.href = macAsset?.browser_download_url || fallback;
+          status.textContent = `当前最新版本：${release.tag_name || 'unknown'} · 点击按钮可直达下载`;
+        } catch (error) {
+          win.href = fallback;
+          mac.href = fallback;
+          status.textContent = '未读取到最新版本，已切换到 GitHub Releases 页面下载。';
+        }
+      })();
+    </script>
+  </body>
+</html>
