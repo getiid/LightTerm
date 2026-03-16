@@ -30,6 +30,7 @@ let runtimeCleanupPromise = null
 let runtimeCleanupReason = ''
 let suppressWindowAllClosedQuit = false
 let macAutoInstallSupport = null
+let activeDbPath = ''
 const DATA_FILE_NAME = 'astrashell.data.json'
 const LEGACY_DB_FILE_NAME = 'lightterm.db'
 const macManualInstallTip = '当前构建未使用 Developer ID 签名，无法一键安装更新。请从 GitHub Release 下载 DMG 手动覆盖安装。'
@@ -167,6 +168,125 @@ function resolveDbPath() {
   return path.join(app.getPath('userData'), DATA_FILE_NAME)
 }
 
+function readJsonFile(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return null
+    const raw = fs.readFileSync(filePath, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function parseExtraCategories(rawValue) {
+  if (Array.isArray(rawValue)) {
+    return [...new Set(rawValue.map((value) => String(value || '').trim()).filter(Boolean))]
+  }
+  if (typeof rawValue === 'string') {
+    try {
+      const parsed = JSON.parse(rawValue)
+      if (Array.isArray(parsed)) {
+        return [...new Set(parsed.map((value) => String(value || '').trim()).filter(Boolean))]
+      }
+    } catch {}
+  }
+  return []
+}
+
+function normalizeSnippetStateForRead(payload) {
+  const now = Date.now()
+  const rawItems = Array.isArray(payload?.items) ? payload.items : []
+  const items = rawItems
+    .map((item) => {
+      const name = String(item?.name || item?.title || '').trim()
+      const commands = String(item?.commands ?? item?.command ?? item?.cmd ?? '')
+      if (!name || !commands.trim()) return null
+      const createdAtRaw = Number(item?.createdAt ?? item?.created_at ?? now)
+      const updatedAtRaw = Number(item?.updatedAt ?? item?.updated_at ?? createdAtRaw ?? now)
+      const createdAt = Number.isFinite(createdAtRaw) && createdAtRaw > 0 ? createdAtRaw : now
+      const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? updatedAtRaw : createdAt
+      return {
+        id: String(item?.id || item?.snippetId || uuidv4()),
+        name,
+        category: String(item?.category || item?.group || '部署').trim() || '部署',
+        hostId: String(item?.hostId ?? item?.host_id ?? '').trim(),
+        description: String(item?.description || item?.desc || '').trim(),
+        commands,
+        createdAt,
+        updatedAt,
+      }
+    })
+    .filter(Boolean)
+
+  const deduped = new Map()
+  for (const item of items) {
+    const prev = deduped.get(item.id)
+    if (!prev || (item.updatedAt || 0) >= (prev.updatedAt || 0)) deduped.set(item.id, item)
+  }
+
+  const meta = payload?.snippetMeta || payload?.snippet_meta || {}
+  const extraCategories = parseExtraCategories(
+    payload?.extraCategories ?? payload?.extra_categories ?? meta?.extra_categories ?? meta?.extraCategories ?? [],
+  )
+
+  return {
+    items: [...deduped.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)),
+    extraCategories,
+  }
+}
+
+function readSnippetStateFromJsonFile(filePath) {
+  const parsed = readJsonFile(filePath)
+  if (!parsed) return null
+  return normalizeSnippetStateForRead({
+    items: parsed?.snippets,
+    snippet_meta: parsed?.snippet_meta,
+  })
+}
+
+function recoverSnippetsFromSiblingFilesIfNeeded() {
+  const existingItems = Array.isArray(db?.data?.snippets) ? db.data.snippets : []
+  if (existingItems.length > 0) return false
+
+  const dbPath = activeDbPath || db?.filePath || resolveDbPath()
+  const dir = path.dirname(dbPath)
+  const currentBase = path.basename(dbPath).toLowerCase()
+  let names = []
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return false
+  }
+
+  let best = null
+  for (const name of names) {
+    const lower = String(name || '').toLowerCase()
+    if (!lower || lower === currentBase) continue
+    const isCandidate =
+      (lower.endsWith('.json') || lower.endsWith('.db'))
+      && (lower.includes('astrashell') || lower.includes('lightterm'))
+    if (!isCandidate) continue
+    const filePath = path.join(dir, name)
+    const state = readSnippetStateFromJsonFile(filePath)
+    if (!state || state.items.length === 0) continue
+    if (!best || state.items.length > best.items.length) {
+      best = { filePath, items: state.items, extraCategories: state.extraCategories }
+    }
+  }
+
+  if (!best) return false
+  db.data.snippets = best.items
+  db.data.snippet_meta = {
+    extra_categories: best.extraCategories,
+    updated_at: Date.now(),
+  }
+  db.save()
+  logMain(`snippets recovered from sibling file: ${best.filePath}, count=${best.items.length}`)
+  return true
+}
+
 function migrateLegacyDbFileIfNeeded(targetPath) {
   if (!targetPath || fs.existsSync(targetPath)) return
   const legacyPath = path.join(path.dirname(targetPath), LEGACY_DB_FILE_NAME)
@@ -301,38 +421,9 @@ function connectConfigFromPayload(payload) {
 
 function normalizeSnippetState(payload) {
   const now = Date.now()
-  const items = Array.isArray(payload?.items)
-    ? payload.items
-      .map((item) => {
-        const name = String(item?.name || '').trim()
-        const commands = String(item?.commands || '')
-        if (!name || !commands.trim()) return null
-        const createdAt = Number(item?.createdAt || now)
-        const updatedAt = Number(item?.updatedAt || now)
-        return {
-          id: String(item?.id || uuidv4()),
-          name,
-          category: String(item?.category || '部署').trim() || '部署',
-          hostId: String(item?.hostId || '').trim(),
-          description: String(item?.description || '').trim(),
-          commands,
-          createdAt: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : now,
-          updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : now,
-        }
-      })
-      .filter(Boolean)
-    : []
-
-  const seen = new Set()
-  const dedupedItems = items.filter((item) => {
-    if (seen.has(item.id)) return false
-    seen.add(item.id)
-    return true
-  })
-
-  const extraCategories = Array.isArray(payload?.extraCategories)
-    ? [...new Set(payload.extraCategories.map((value) => String(value || '').trim()).filter(Boolean))]
-    : []
+  const normalizedRead = normalizeSnippetStateForRead(payload)
+  const dedupedItems = normalizedRead.items
+  const extraCategories = normalizedRead.extraCategories
 
   return {
     items: dedupedItems.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)),
@@ -393,6 +484,13 @@ async function withSftp(payload, handler) {
 
 function initDb() {
   const dbPath = resolveDbPath()
+  activeDbPath = dbPath
+  const settings = readSettings()
+  if (!settings.dataPath && settings.dbPath && /[\\/]lightterm\.db$/i.test(String(settings.dbPath))) {
+    settings.dataPath = dbPath
+    delete settings.dbPath
+    writeSettings(settings)
+  }
   try {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true })
     migrateLegacyDbFileIfNeeded(dbPath)
@@ -400,13 +498,14 @@ function initDb() {
     db.save()
   } catch (e) {
     const fallback = path.join(app.getPath('userData'), DATA_FILE_NAME)
+    activeDbPath = fallback
     fs.mkdirSync(path.dirname(fallback), { recursive: true })
     db = new JsonDB(fallback)
     db.save()
-    const settings = readSettings()
-    delete settings.dataPath
-    delete settings.dbPath
-    writeSettings(settings)
+    const fallbackSettings = readSettings()
+    delete fallbackSettings.dataPath
+    delete fallbackSettings.dbPath
+    writeSettings(fallbackSettings)
   }
 
   db.exec(`
@@ -1292,12 +1391,15 @@ ipcMain.handle('hosts:delete', async (_event, payload) => {
 })
 
 ipcMain.handle('snippets:get-state', async () => {
+  recoverSnippetsFromSiblingFilesIfNeeded()
+  const normalized = normalizeSnippetStateForRead({
+    items: db.data.snippets,
+    snippet_meta: db.data.snippet_meta,
+  })
   const items = Array.isArray(db.data.snippets)
-    ? [...db.data.snippets].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    ? normalized.items
     : []
-  const extraCategories = Array.isArray(db.data.snippet_meta?.extra_categories)
-    ? [...db.data.snippet_meta.extra_categories]
-    : []
+  const extraCategories = normalized.extraCategories
   return { ok: true, items, extraCategories }
 })
 
