@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('lightterm', {
   appGetStorage: () => ipcRenderer.invoke('app:get-storage'),
+  appGetStorageMeta: () => ipcRenderer.invoke('app:get-storage-meta'),
   appPickStorageFolder: () => ipcRenderer.invoke('app:pick-storage-folder'),
   appSetStorageFolder: (payload) => ipcRenderer.invoke('app:set-storage-folder', payload),
   appRestart: () => ipcRenderer.invoke('app:restart'),

@@ -399,6 +399,7 @@ const terminalDecoders = new Map<string, TextDecoder>()
 const storageDbPath = ref('')
 const storageFolderInput = ref('')
 const storageMsg = ref('')
+const storageMetaText = ref('')
 const startupGateVisible = ref(true)
 const startupGateMode = ref<'loading' | 'init' | 'unlock'>('loading')
 const startupGateBusy = ref(false)
@@ -2209,10 +2210,19 @@ const openManualUpdateLink = async (url: string) => {
 
 const refreshStorageInfo = async () => {
   try {
-    const res = await window.lightterm.appGetStorage()
+    const [res, meta] = await Promise.all([
+      window.lightterm.appGetStorage(),
+      window.lightterm.appGetStorageMeta(),
+    ])
     if (res.ok) {
-      storageDbPath.value = res.dbPath || ''
+      storageDbPath.value = res.dbPath || meta.dbPath || ''
       ensureStartupDbFolder()
+    }
+    if (meta.ok) {
+      const modified = meta.mtimeMs ? new Date(meta.mtimeMs).toLocaleString() : '-'
+      const kb = Math.max(0, Number(meta.size || 0)) / 1024
+      const encrypted = meta.encrypted ? '已加密' : '未加密'
+      storageMetaText.value = `文件：${meta.exists ? '存在' : '不存在'} ｜ 大小：${kb.toFixed(1)} KB ｜ 修改时间：${modified} ｜ 数据：主机 ${meta.hosts || 0} / 片段 ${meta.snippets || 0} / 密钥 ${meta.vaultKeys || 0} ｜ 加密：${encrypted} ｜ 格式：v${meta.storageVersion || 1}`
     }
   } catch (error) {
     startupGateError.value = `读取数据文件路径失败：${formatAppError(error)}`
@@ -2900,6 +2910,7 @@ onBeforeUnmount(() => {
           <button class="muted" @click="refreshStorageOverview">刷新</button>
         </div>
         <p>{{ storageMsg }}</p>
+        <p class="hint">{{ storageMetaText || '正在读取数据文件状态...' }}</p>
         <div class="grid">
           <button class="muted" @click="refreshStorageOverview">刷新路径</button>
           <button class="muted" @click="copyDbPath">复制路径</button>

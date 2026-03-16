@@ -283,6 +283,7 @@ class JsonDB {
     this.encryptionKey = null
     this.encryptedPayload = null
     this.data = {
+      storage_version: 2,
       hosts: [],
       snippets: [],
       snippet_meta: { extra_categories: [], updated_at: 0 },
@@ -376,6 +377,8 @@ class JsonDB {
     fs.mkdirSync(dir, { recursive: true })
     const tmpPath = path.join(dir, `.${path.basename(this.filePath)}.${process.pid}.${Date.now()}.tmp`)
     const persist = { ...this.data }
+    persist.storage_version = 2
+    persist.updated_at = Date.now()
     if (this.shouldEncryptOnSave()) {
       const encryptedPayload = encryptText(JSON.stringify({
         hosts: Array.isArray(this.data.hosts) ? this.data.hosts : [],
@@ -663,6 +666,32 @@ function startDbWatchTimer() {
     }
   }, 1800)
   dbWatchTimer.unref?.()
+}
+
+function getStorageMeta() {
+  const dbPath = activeDbPath || resolveDbPath()
+  let exists = false
+  let size = 0
+  let mtimeMs = 0
+  try {
+    if (fs.existsSync(dbPath)) {
+      exists = true
+      const stat = fs.statSync(dbPath)
+      size = Number(stat?.size || 0)
+      mtimeMs = Number(stat?.mtimeMs || 0)
+    }
+  } catch {}
+  return {
+    dbPath,
+    exists,
+    size,
+    mtimeMs,
+    encrypted: !!db?.encryptedPayload,
+    storageVersion: Number(db?.data?.storage_version || 1),
+    hosts: Array.isArray(db?.data?.hosts) ? db.data.hosts.length : 0,
+    snippets: Array.isArray(db?.data?.snippets) ? db.data.snippets.length : 0,
+    vaultKeys: Array.isArray(db?.data?.vault_keys) ? db.data.vault_keys.length : 0,
+  }
 }
 
 function logMain(message) {
@@ -1111,6 +1140,11 @@ app.on('before-quit', () => {
 ipcMain.handle('app:get-storage', async () => {
   const dbPath = activeDbPath || resolveDbPath()
   return { ok: true, dbPath }
+})
+
+ipcMain.handle('app:get-storage-meta', async () => {
+  refreshDbFromDisk('app:get-storage-meta', true)
+  return { ok: true, ...getStorageMeta() }
 })
 
 ipcMain.handle('app:pick-storage-folder', async () => {
