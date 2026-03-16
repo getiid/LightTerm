@@ -279,7 +279,9 @@ function migrateLegacyDbFileIfNeeded(targetPath) {
 class JsonDB {
   constructor(filePath) {
     this.filePath = filePath
-    this.lastFileMtimeMs = 0
+    this.lastFileSignature = ''
+    this.encryptionKey = null
+    this.encryptedPayload = null
     this.data = {
       hosts: [],
       snippets: [],
@@ -290,32 +292,78 @@ class JsonDB {
     this.load()
   }
 
+  setEncryptionKey(key) {
+    this.encryptionKey = key || null
+  }
+
+  getFileSignature() {
+    if (!fs.existsSync(this.filePath)) return ''
+    try {
+      const stat = fs.statSync(this.filePath)
+      return `${Number(stat?.mtimeMs || 0)}:${Number(stat?.size || 0)}`
+    } catch {
+      return ''
+    }
+  }
+
+  shouldEncryptOnSave() {
+    return !!(this.encryptionKey && this.data?.vault_meta?.salt && this.data?.vault_meta?.verifier_hash)
+  }
+
+  applyDecryptedPayload() {
+    if (!this.encryptedPayload || !this.encryptionKey) return false
+    try {
+      const raw = decryptText(this.encryptedPayload, this.encryptionKey)
+      const parsed = JSON.parse(raw)
+      this.data.hosts = Array.isArray(parsed?.hosts) ? parsed.hosts : []
+      this.data.snippets = Array.isArray(parsed?.snippets) ? parsed.snippets : []
+      this.data.snippet_meta = parsed?.snippet_meta && typeof parsed.snippet_meta === 'object'
+        ? {
+          extra_categories: Array.isArray(parsed.snippet_meta.extra_categories) ? parsed.snippet_meta.extra_categories : [],
+          updated_at: Number(parsed.snippet_meta.updated_at || 0),
+        }
+        : { extra_categories: [], updated_at: 0 }
+      this.data.vault_keys = Array.isArray(parsed?.vault_keys) ? parsed.vault_keys : []
+      return true
+    } catch {
+      return false
+    }
+  }
+
   load() {
     if (!fs.existsSync(this.filePath)) {
-      this.lastFileMtimeMs = 0
+      this.lastFileSignature = ''
       return
     }
     try {
       const raw = fs.readFileSync(this.filePath, 'utf8')
       const parsed = JSON.parse(raw)
       this.data = { ...this.data, ...parsed }
-      const stat = fs.statSync(this.filePath)
-      this.lastFileMtimeMs = Number(stat?.mtimeMs || 0)
+      if (parsed?.encrypted_payload && typeof parsed.encrypted_payload === 'object') {
+        this.encryptedPayload = parsed.encrypted_payload
+        this.data.hosts = []
+        this.data.snippets = []
+        this.data.snippet_meta = { extra_categories: [], updated_at: 0 }
+        this.data.vault_keys = []
+        this.applyDecryptedPayload()
+      } else {
+        this.encryptedPayload = null
+      }
+      this.lastFileSignature = this.getFileSignature()
     } catch {}
   }
 
   reloadIfChanged() {
     if (!fs.existsSync(this.filePath)) {
-      if (this.lastFileMtimeMs !== 0) {
-        this.lastFileMtimeMs = 0
+      if (this.lastFileSignature) {
+        this.lastFileSignature = ''
         return true
       }
       return false
     }
     try {
-      const stat = fs.statSync(this.filePath)
-      const nextMtime = Number(stat?.mtimeMs || 0)
-      if (nextMtime <= this.lastFileMtimeMs + 0.5) return false
+      const nextSignature = this.getFileSignature()
+      if (nextSignature && nextSignature === this.lastFileSignature) return false
       this.load()
       return true
     } catch {
@@ -327,11 +375,30 @@ class JsonDB {
     const dir = path.dirname(this.filePath)
     fs.mkdirSync(dir, { recursive: true })
     const tmpPath = path.join(dir, `.${path.basename(this.filePath)}.${process.pid}.${Date.now()}.tmp`)
+    const persist = { ...this.data }
+    if (this.shouldEncryptOnSave()) {
+      const encryptedPayload = encryptText(JSON.stringify({
+        hosts: Array.isArray(this.data.hosts) ? this.data.hosts : [],
+        snippets: Array.isArray(this.data.snippets) ? this.data.snippets : [],
+        snippet_meta: this.data.snippet_meta && typeof this.data.snippet_meta === 'object'
+          ? this.data.snippet_meta
+          : { extra_categories: [], updated_at: 0 },
+        vault_keys: Array.isArray(this.data.vault_keys) ? this.data.vault_keys : [],
+      }), this.encryptionKey)
+      this.encryptedPayload = encryptedPayload
+      persist.hosts = []
+      persist.snippets = []
+      persist.snippet_meta = { extra_categories: [], updated_at: 0 }
+      persist.vault_keys = []
+      persist.encrypted_payload = encryptedPayload
+    } else {
+      this.encryptedPayload = null
+      delete persist.encrypted_payload
+    }
     try {
-      fs.writeFileSync(tmpPath, JSON.stringify(this.data, null, 2), 'utf8')
+      fs.writeFileSync(tmpPath, JSON.stringify(persist, null, 2), 'utf8')
       fs.renameSync(tmpPath, this.filePath)
-      const stat = fs.statSync(this.filePath)
-      this.lastFileMtimeMs = Number(stat?.mtimeMs || 0)
+      this.lastFileSignature = this.getFileSignature()
     } finally {
       try {
         if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath)
@@ -509,12 +576,14 @@ function initDb() {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true })
     migrateLegacyDbFileIfNeeded(dbPath)
     db = new JsonDB(dbPath)
+    db.setEncryptionKey(vaultKey)
     db.save()
   } catch (e) {
     const fallback = path.join(app.getPath('userData'), DATA_FILE_NAME)
     activeDbPath = fallback
     fs.mkdirSync(path.dirname(fallback), { recursive: true })
     db = new JsonDB(fallback)
+    db.setEncryptionKey(vaultKey)
     db.save()
     const fallbackSettings = readSettings()
     delete fallbackSettings.dataPath
@@ -1222,8 +1291,10 @@ ipcMain.handle('vault:set-master', async (_event, payload) => {
     const salt = crypto.randomBytes(16)
     const key = deriveKey(pwd, salt)
     const verifierHash = crypto.createHash('sha256').update(key).digest('base64')
-    db.prepare('INSERT OR REPLACE INTO vault_meta (id, salt, verifier_hash, updated_at) VALUES (1, ?, ?, ?)').run(salt.toString('base64'), verifierHash, Date.now())
     vaultKey = key
+    db.setEncryptionKey(vaultKey)
+    db.prepare('INSERT OR REPLACE INTO vault_meta (id, salt, verifier_hash, updated_at) VALUES (1, ?, ?, ?)').run(salt.toString('base64'), verifierHash, Date.now())
+    db.save()
     logMain('vault:set-master ok')
     return { ok: true }
   } catch (e) {
@@ -1244,6 +1315,11 @@ ipcMain.handle('vault:unlock', async (_event, payload) => {
     const key = deriveKey(pwd, Buffer.from(meta.salt, 'base64'))
     if (crypto.createHash('sha256').update(key).digest('base64') !== meta.verifier_hash) return { ok: false, error: '主密码错误' }
     vaultKey = key
+    db.setEncryptionKey(vaultKey)
+    if (db.encryptedPayload && !db.applyDecryptedPayload()) {
+      return { ok: false, error: '数据文件解密失败，请确认当前使用的是同一份数据文件' }
+    }
+    db.save()
     logMain('vault:unlock ok')
     return { ok: true }
   } catch (e) {
@@ -1257,6 +1333,7 @@ ipcMain.handle('vault:reset', async () => {
     refreshDbFromDisk('vault:reset')
     db.data.vault_meta = null
     db.data.vault_keys = []
+    db.setEncryptionKey(null)
     db.save()
     vaultKey = null
     logMain('vault:reset ok')
