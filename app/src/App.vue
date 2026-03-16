@@ -397,14 +397,14 @@ const terminalEncoding = ref<TerminalEncoding>('utf-8')
 const terminalDecoders = new Map<string, TextDecoder>()
 
 const storageDbPath = ref('')
-const storageFolderInput = ref('')
+const storagePathInput = ref('')
 const storageMsg = ref('')
 const storageMetaText = ref('')
 const startupGateVisible = ref(true)
 const startupGateMode = ref<'loading' | 'init' | 'unlock'>('loading')
 const startupGateBusy = ref(false)
 const startupGateError = ref('')
-const startupDbFolder = ref('')
+const startupDbPath = ref('')
 const startupMasterConfirm = ref('')
 const startupTasksLoaded = ref(false)
 
@@ -1847,22 +1847,30 @@ const deleteSftp = async () => {
 
 const plainVaultMessage = (msg: string) => String(msg || '').replace(/^[✅❌]\s*/, '').trim()
 const dbFolderFromPath = (dbPath: string) => String(dbPath || '').replace(/[\\/](lightterm\.db|astrashell\.data\.json)$/i, '')
+const isStorageFilePath = (value: string) => /\.(json|db)$/i.test(String(value || '').trim())
+const normalizeStoragePathForCompare = (value: string) => {
+  const trimmed = String(value || '').trim()
+  if (!trimmed) return ''
+  const normalized = isStorageFilePath(trimmed)
+    ? trimmed
+    : `${trimmed.replace(/[\\/]+$/, '')}/astrashell.data.json`
+  return normalized.replace(/\\/g, '/').toLowerCase()
+}
 const formatAppError = (error: unknown) => {
   if (error instanceof Error) return error.message || String(error)
   return String(error || '未知错误')
 }
 
-const ensureStartupDbFolder = () => {
-  if (startupDbFolder.value) return
-  const currentFolder = dbFolderFromPath(storageDbPath.value)
-  if (currentFolder) startupDbFolder.value = currentFolder
+const ensureStartupDbPath = () => {
+  if (startupDbPath.value) return
+  if (storageDbPath.value) startupDbPath.value = storageDbPath.value
 }
 
 const evaluateVaultGate = () => {
   if (!vaultInitialized.value) {
     startupGateMode.value = 'init'
     startupGateVisible.value = true
-    ensureStartupDbFolder()
+    ensureStartupDbPath()
     return
   }
   if (!vaultUnlocked.value) {
@@ -1875,23 +1883,31 @@ const evaluateVaultGate = () => {
   startupMasterConfirm.value = ''
 }
 
-const pickStartupDbFolder = async () => {
-  const res = await window.lightterm.appPickStorageFolder()
-  if (res.ok && res.folder) {
-    startupDbFolder.value = res.folder
+const pickStartupDbPath = async () => {
+  const res = await window.lightterm.appPickStorageFile()
+  if (res.ok && res.filePath) {
+    startupDbPath.value = res.filePath
     startupGateError.value = ''
   }
 }
 
-const useCurrentDbFolder = () => {
-  startupDbFolder.value = dbFolderFromPath(storageDbPath.value)
+const pickStartupDbFolder = async () => {
+  const res = await window.lightterm.appPickStorageFolder()
+  if (res.ok && res.folder) {
+    startupDbPath.value = res.folder
+    startupGateError.value = ''
+  }
+}
+
+const useCurrentDbPath = () => {
+  startupDbPath.value = storageDbPath.value || dbFolderFromPath(storageDbPath.value)
   startupGateError.value = ''
 }
 
 const runStartupInit = async () => {
   if (startupGateBusy.value) return
-  if (!startupDbFolder.value.trim()) {
-    startupGateError.value = '请先选择数据文件目录'
+  if (!startupDbPath.value.trim()) {
+    startupGateError.value = '请先选择数据文件路径'
     return
   }
   if (!vaultMaster.value) {
@@ -1905,15 +1921,15 @@ const runStartupInit = async () => {
   startupGateBusy.value = true
   startupGateError.value = ''
   try {
-    const targetFolder = startupDbFolder.value.trim()
-    const currentFolder = dbFolderFromPath(storageDbPath.value)
-    if (targetFolder && targetFolder !== currentFolder) {
-      const setRes = await window.lightterm.appSetStorageFolder({ folder: targetFolder })
+    const targetPath = startupDbPath.value.trim()
+    const currentPath = storageDbPath.value.trim()
+    if (targetPath && normalizeStoragePathForCompare(targetPath) !== normalizeStoragePathForCompare(currentPath)) {
+      const setRes = await window.lightterm.appSetStorageFolder({ folder: targetPath })
       if (!setRes.ok) {
-        startupGateError.value = `数据文件目录设置失败：${setRes.error || '未知错误'}`
+        startupGateError.value = `数据文件路径设置失败：${setRes.error || '未知错误'}`
         return
       }
-      startupGateError.value = '数据文件目录已设置，应用正在重启...'
+      startupGateError.value = '数据文件路径已设置，应用正在重启...'
       await window.lightterm.appRestart()
       return
     }
@@ -2216,13 +2232,17 @@ const refreshStorageInfo = async () => {
     ])
     if (res.ok) {
       storageDbPath.value = res.dbPath || meta.dbPath || ''
-      ensureStartupDbFolder()
+      ensureStartupDbPath()
+      if (!storagePathInput.value && storageDbPath.value) storagePathInput.value = storageDbPath.value
     }
     if (meta.ok) {
       const modified = meta.mtimeMs ? new Date(meta.mtimeMs).toLocaleString() : '-'
       const kb = Math.max(0, Number(meta.size || 0)) / 1024
       const encrypted = meta.encrypted ? '已加密' : '未加密'
-      storageMetaText.value = `文件：${meta.exists ? '存在' : '不存在'} ｜ 大小：${kb.toFixed(1)} KB ｜ 修改时间：${modified} ｜ 数据：主机 ${meta.hosts || 0} / 片段 ${meta.snippets || 0} / 密钥 ${meta.vaultKeys || 0} ｜ 加密：${encrypted} ｜ 格式：v${meta.storageVersion || 1}`
+      const pathInfo = meta.usingFallback
+        ? `当前读取：${meta.dbPath || '-'}（已降级） ｜ 目标共享：${meta.preferredDbPath || '-'}`
+        : `当前读取：${meta.dbPath || '-'}`
+      storageMetaText.value = `${pathInfo} ｜ 文件：${meta.exists ? '存在' : '不存在'} ｜ 大小：${kb.toFixed(1)} KB ｜ 修改时间：${modified} ｜ 数据：主机 ${meta.hosts || 0} / 片段 ${meta.snippets || 0} / 密钥 ${meta.vaultKeys || 0} ｜ 加密：${encrypted} ｜ 格式：v${meta.storageVersion || 1}`
     }
   } catch (error) {
     startupGateError.value = `读取数据文件路径失败：${formatAppError(error)}`
@@ -2247,13 +2267,18 @@ const scheduleStorageDataRefresh = () => {
   }, 320)
 }
 
+const pickStorageFile = async () => {
+  const res = await window.lightterm.appPickStorageFile()
+  if (res.ok && res.filePath) storagePathInput.value = res.filePath
+}
+
 const pickStorageFolder = async () => {
   const res = await window.lightterm.appPickStorageFolder()
-  if (res.ok && res.folder) storageFolderInput.value = res.folder
+  if (res.ok && res.folder) storagePathInput.value = res.folder
 }
-const applyStorageFolder = async () => {
-  if (!storageFolderInput.value) return
-  const res = await window.lightterm.appSetStorageFolder({ folder: storageFolderInput.value })
+const applyStoragePath = async () => {
+  if (!storagePathInput.value.trim()) return
+  const res = await window.lightterm.appSetStorageFolder({ folder: storagePathInput.value.trim() })
   storageMsg.value = res.ok
     ? `已设置数据文件：${res.dbPath}（重启应用生效）`
     : `设置失败：${res.error}`
@@ -2904,9 +2929,10 @@ onBeforeUnmount(() => {
         <h3>本地存储</h3>
         <p>当前数据文件：{{ storageDbPath }}</p>
         <div class="grid">
-          <input v-model="storageFolderInput" placeholder="选择 iCloud/共享文件夹目录" />
+          <input v-model="storagePathInput" placeholder="输入共享路径（可填目录或 .json/.db 文件）" />
+          <button class="muted" @click="pickStorageFile">选择文件</button>
           <button class="muted" @click="pickStorageFolder">选择目录</button>
-          <button @click="applyStorageFolder">应用目录</button>
+          <button @click="applyStoragePath">应用路径</button>
           <button class="muted" @click="refreshStorageOverview">刷新</button>
         </div>
         <p>{{ storageMsg }}</p>
@@ -2915,7 +2941,7 @@ onBeforeUnmount(() => {
           <button class="muted" @click="refreshStorageOverview">刷新路径</button>
           <button class="muted" @click="copyDbPath">复制路径</button>
         </div>
-        <p class="hint">默认文件名为 `astrashell.data.json`。把目录放到 iCloud/OneDrive/共享盘/U 盘即可跨设备直接读取同一份数据。</p>
+        <p class="hint">建议直接选择同一个 `astrashell.data.json` 文件；也可填目录（会自动拼接默认文件名）。把文件放到 iCloud/OneDrive/共享盘/U 盘即可跨设备读取同一份数据。</p>
         <p class="hint">不再使用“手动同步队列”：所有改动都直接写入数据文件。</p>
       </section>
 
@@ -2952,11 +2978,12 @@ onBeforeUnmount(() => {
         <h3 v-if="startupGateMode === 'loading'">正在检查密钥仓库...</h3>
         <template v-else-if="startupGateMode === 'init'">
           <h3>首次启动：初始化数据文件与密码</h3>
-          <p>请先确定数据文件目录，然后设置主密码完成初始化。</p>
+          <p>请先确定数据文件路径，然后设置主密码完成初始化。</p>
           <div class="grid startup-db-grid">
-            <input v-model="startupDbFolder" placeholder="数据文件目录（将创建 astrashell.data.json）" />
+            <input v-model="startupDbPath" placeholder="数据路径（可选目录或 .json/.db 文件）" />
+            <button class="muted" :disabled="startupGateBusy" @click="pickStartupDbPath">选择文件</button>
             <button class="muted" :disabled="startupGateBusy" @click="pickStartupDbFolder">选择目录</button>
-            <button class="ghost" :disabled="startupGateBusy" @click="useCurrentDbFolder">使用当前目录</button>
+            <button class="ghost" :disabled="startupGateBusy" @click="useCurrentDbPath">使用当前路径</button>
           </div>
           <p class="hint">当前数据文件：{{ storageDbPath || '读取中...' }}</p>
           <div class="grid startup-auth-grid">

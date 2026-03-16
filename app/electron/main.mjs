@@ -31,6 +31,7 @@ let runtimeCleanupReason = ''
 let suppressWindowAllClosedQuit = false
 let macAutoInstallSupport = null
 let activeDbPath = ''
+let preferredDbPath = ''
 let dbWatchTimer = null
 const DATA_FILE_NAME = 'astrashell.data.json'
 const LEGACY_DB_FILE_NAME = 'lightterm.db'
@@ -132,17 +133,35 @@ function getUpdateSourceLabel(source) {
 
 function resolveDbPath() {
   const envPath = process.env.ASTRASHELL_DATA_PATH || process.env.LIGHTTERM_DB_PATH
-  if (envPath) return envPath
+  if (envPath) return normalizeStoragePath(envPath)
   const s = readSettings()
-  if (s.dataPath) return s.dataPath
+  if (s.dataPath) return normalizeStoragePath(s.dataPath)
   if (s.dbPath) {
     const legacy = String(s.dbPath)
     if (/[\\/]lightterm\.db$/i.test(legacy)) {
-      return path.join(path.dirname(legacy), DATA_FILE_NAME)
+      return normalizeStoragePath(path.join(path.dirname(legacy), DATA_FILE_NAME))
     }
-    return legacy
+    return normalizeStoragePath(legacy)
   }
-  return path.join(app.getPath('userData'), DATA_FILE_NAME)
+  return normalizeStoragePath(path.join(app.getPath('userData'), DATA_FILE_NAME))
+}
+
+function isStorageFilePath(inputPath) {
+  const ext = path.extname(String(inputPath || '')).toLowerCase()
+  return ext === '.json' || ext === '.db'
+}
+
+function normalizeStoragePath(inputPath) {
+  const raw = String(inputPath || '').trim()
+  if (!raw) return ''
+  if (isStorageFilePath(raw)) return raw
+  return path.join(raw, DATA_FILE_NAME)
+}
+
+function getStorageDirFromPath(inputPath) {
+  const raw = String(inputPath || '').trim()
+  if (!raw) return ''
+  return isStorageFilePath(raw) ? path.dirname(raw) : raw
 }
 
 function readJsonFile(filePath) {
@@ -300,8 +319,9 @@ class JsonDB {
   getFileSignature() {
     if (!fs.existsSync(this.filePath)) return ''
     try {
-      const stat = fs.statSync(this.filePath)
-      return `${Number(stat?.mtimeMs || 0)}:${Number(stat?.size || 0)}`
+      const raw = fs.readFileSync(this.filePath)
+      const hash = crypto.createHash('sha1').update(raw).digest('hex')
+      return `${raw.length}:${hash}`
     } catch {
       return ''
     }
@@ -467,6 +487,65 @@ class JsonDB {
   }
 }
 
+function getHostUpdatedAt(row) {
+  return Number(row?.updated_at || row?.updatedAt || 0)
+}
+
+function getVaultKeyUpdatedAt(row) {
+  return Number(row?.updated_at || row?.updatedAt || 0)
+}
+
+function getSnippetUpdatedAt(row) {
+  return Number(row?.updatedAt || row?.updated_at || 0)
+}
+
+function mergeRowsById(baseRows, incomingRows, getUpdatedAt) {
+  const merged = new Map()
+  for (const row of Array.isArray(baseRows) ? baseRows : []) {
+    if (!row?.id) continue
+    merged.set(String(row.id), row)
+  }
+  for (const row of Array.isArray(incomingRows) ? incomingRows : []) {
+    if (!row?.id) continue
+    const key = String(row.id)
+    const prev = merged.get(key)
+    if (!prev || getUpdatedAt(row) >= getUpdatedAt(prev)) merged.set(key, row)
+  }
+  return [...merged.values()]
+}
+
+function mergeSnippetMeta(baseMeta, incomingMeta) {
+  const baseUpdated = Number(baseMeta?.updated_at || 0)
+  const incomingUpdated = Number(incomingMeta?.updated_at || 0)
+  const mergedCategories = [...new Set([
+    ...(Array.isArray(baseMeta?.extra_categories) ? baseMeta.extra_categories : []),
+    ...(Array.isArray(incomingMeta?.extra_categories) ? incomingMeta.extra_categories : []),
+  ].map((v) => String(v || '').trim()).filter(Boolean))]
+  return {
+    extra_categories: mergedCategories,
+    updated_at: Math.max(baseUpdated, incomingUpdated),
+  }
+}
+
+function mergeVaultMeta(baseMeta, incomingMeta) {
+  if (!baseMeta) return incomingMeta || null
+  if (!incomingMeta) return baseMeta || null
+  const baseUpdated = Number(baseMeta.updated_at || 0)
+  const incomingUpdated = Number(incomingMeta.updated_at || 0)
+  return incomingUpdated >= baseUpdated ? incomingMeta : baseMeta
+}
+
+function mergeDbData(baseData, incomingData) {
+  return {
+    storage_version: Math.max(Number(baseData?.storage_version || 1), Number(incomingData?.storage_version || 1), 2),
+    hosts: mergeRowsById(baseData?.hosts, incomingData?.hosts, getHostUpdatedAt),
+    snippets: mergeRowsById(baseData?.snippets, incomingData?.snippets, getSnippetUpdatedAt),
+    snippet_meta: mergeSnippetMeta(baseData?.snippet_meta, incomingData?.snippet_meta),
+    vault_meta: mergeVaultMeta(baseData?.vault_meta, incomingData?.vault_meta),
+    vault_keys: mergeRowsById(baseData?.vault_keys, incomingData?.vault_keys, getVaultKeyUpdatedAt),
+  }
+}
+
 function broadcast(channel, payload) {
   BrowserWindow.getAllWindows().forEach((win) => win.webContents.send(channel, payload))
 }
@@ -566,8 +645,17 @@ async function withSftp(payload, handler) {
   })
 }
 
+function openDbAtPath(filePath, { migrateLegacy = false } = {}) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  if (migrateLegacy) migrateLegacyDbFileIfNeeded(filePath)
+  const nextDb = new JsonDB(filePath)
+  nextDb.setEncryptionKey(vaultKey)
+  return nextDb
+}
+
 function initDb() {
   const dbPath = resolveDbPath()
+  preferredDbPath = dbPath
   activeDbPath = dbPath
   const settings = readSettings()
   if (!settings.dataPath && settings.dbPath && /[\\/]lightterm\.db$/i.test(String(settings.dbPath))) {
@@ -576,22 +664,14 @@ function initDb() {
     writeSettings(settings)
   }
   try {
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true })
-    migrateLegacyDbFileIfNeeded(dbPath)
-    db = new JsonDB(dbPath)
-    db.setEncryptionKey(vaultKey)
+    db = openDbAtPath(dbPath, { migrateLegacy: true })
     db.save()
   } catch (e) {
     const fallback = path.join(app.getPath('userData'), DATA_FILE_NAME)
     activeDbPath = fallback
-    fs.mkdirSync(path.dirname(fallback), { recursive: true })
-    db = new JsonDB(fallback)
-    db.setEncryptionKey(vaultKey)
+    db = openDbAtPath(fallback)
     db.save()
-    const fallbackSettings = readSettings()
-    delete fallbackSettings.dataPath
-    delete fallbackSettings.dbPath
-    writeSettings(fallbackSettings)
+    logMain(`initDb fallback active preferred=${dbPath} fallback=${fallback} error=${e?.message || e}`)
   }
 
   db.exec(`
@@ -648,7 +728,15 @@ function initDb() {
 function refreshDbFromDisk(reason = 'manual', force = false) {
   if (!db) return false
   try {
-    const changed = force ? (db.load(), true) : db.reloadIfChanged()
+    if (force) tryPromotePreferredDb(`${reason}:force`)
+    let changed = false
+    if (force) {
+      const prevSignature = db.lastFileSignature
+      db.load()
+      changed = prevSignature !== db.lastFileSignature
+    } else {
+      changed = db.reloadIfChanged()
+    }
     if (changed) logMain(`db refreshed from disk reason=${reason}`)
     return changed
   } catch (e) {
@@ -657,11 +745,35 @@ function refreshDbFromDisk(reason = 'manual', force = false) {
   }
 }
 
+function tryPromotePreferredDb(reason = 'poll') {
+  if (!preferredDbPath || !db || preferredDbPath === activeDbPath) return false
+  try {
+    const preferredDb = openDbAtPath(preferredDbPath, { migrateLegacy: true })
+    if (preferredDb.encryptedPayload && vaultKey) preferredDb.applyDecryptedPayload()
+    if (preferredDb.encryptedPayload && !vaultKey) return false
+    if (db.encryptedPayload && vaultKey) db.applyDecryptedPayload()
+    if (db.encryptedPayload && !vaultKey) return false
+
+    preferredDb.data = mergeDbData(preferredDb.data, db.data)
+    preferredDb.setEncryptionKey(vaultKey)
+    preferredDb.save()
+
+    db = preferredDb
+    activeDbPath = preferredDbPath
+    logMain(`db switched back to preferred path reason=${reason} path=${preferredDbPath}`)
+    return true
+  } catch (e) {
+    logMain(`db switch to preferred failed reason=${reason} path=${preferredDbPath} error=${e?.message || e}`)
+    return false
+  }
+}
+
 function startDbWatchTimer() {
   if (dbWatchTimer) clearInterval(dbWatchTimer)
   dbWatchTimer = setInterval(() => {
+    const switched = tryPromotePreferredDb('poll')
     const changed = refreshDbFromDisk('poll', false)
-    if (changed) {
+    if (switched || changed) {
       broadcast('storage:data-changed', { changedAt: Date.now() })
     }
   }, 1800)
@@ -683,6 +795,8 @@ function getStorageMeta() {
   } catch {}
   return {
     dbPath,
+    preferredDbPath: preferredDbPath || dbPath,
+    usingFallback: !!preferredDbPath && preferredDbPath !== dbPath,
     exists,
     size,
     mtimeMs,
@@ -1150,20 +1264,37 @@ ipcMain.handle('app:get-storage-meta', async () => {
 ipcMain.handle('app:pick-storage-folder', async () => {
   const win = BrowserWindow.getFocusedWindow()
   const picked = await dialog.showOpenDialog(win, {
-    title: '选择数据文件目录（可选 iCloud/共享文件夹/U 盘）',
+    title: '选择数据目录（用于自动拼接 astrashell.data.json）',
     properties: ['openDirectory', 'createDirectory'],
   })
   if (picked.canceled || !picked.filePaths?.[0]) return { ok: false, error: '已取消' }
   return { ok: true, folder: picked.filePaths[0] }
 })
 
+ipcMain.handle('app:pick-storage-file', async () => {
+  const win = BrowserWindow.getFocusedWindow()
+  const currentPath = preferredDbPath || activeDbPath || resolveDbPath()
+  const defaultPath = isStorageFilePath(currentPath)
+    ? currentPath
+    : path.join(getStorageDirFromPath(currentPath), DATA_FILE_NAME)
+  const picked = await dialog.showSaveDialog(win, {
+    title: '选择共享数据文件（建议同一个 .json 文件）',
+    defaultPath,
+    filters: [{ name: 'AstraShell Data', extensions: ['json', 'db'] }],
+  })
+  if (picked.canceled || !picked.filePath) return { ok: false, error: '已取消' }
+  return { ok: true, filePath: picked.filePath }
+})
+
 ipcMain.handle('app:set-storage-folder', async (_event, payload) => {
-  if (!payload?.folder) return { ok: false, error: '缺少目录' }
-  const nextDbPath = path.join(payload.folder, DATA_FILE_NAME)
+  if (!payload?.folder) return { ok: false, error: '缺少路径' }
+  const nextDbPath = normalizeStoragePath(payload.folder)
+  if (!nextDbPath) return { ok: false, error: '路径无效' }
   const settings = readSettings()
   settings.dataPath = nextDbPath
   delete settings.dbPath
   writeSettings(settings)
+  preferredDbPath = nextDbPath
   return { ok: true, dbPath: nextDbPath, restartRequired: true }
 })
 
@@ -1249,7 +1380,7 @@ ipcMain.handle('hosts:list', async () => {
 })
 
 ipcMain.handle('hosts:save', async (_event, payload) => {
-  refreshDbFromDisk('hosts:save')
+  refreshDbFromDisk('hosts:save', true)
   const now = Date.now()
   const id = payload.id || uuidv4()
   db.prepare(`
@@ -1277,13 +1408,13 @@ ipcMain.handle('hosts:save', async (_event, payload) => {
 })
 
 ipcMain.handle('hosts:delete', async (_event, payload) => {
-  refreshDbFromDisk('hosts:delete')
+  refreshDbFromDisk('hosts:delete', true)
   db.prepare('DELETE FROM hosts WHERE id = ?').run(payload.id)
   return { ok: true }
 })
 
 ipcMain.handle('snippets:get-state', async () => {
-  refreshDbFromDisk('snippets:get-state')
+  refreshDbFromDisk('snippets:get-state', true)
   recoverSnippetsFromSiblingFilesIfNeeded()
   const normalized = normalizeSnippetStateForRead({
     items: db.data.snippets,
@@ -1297,7 +1428,7 @@ ipcMain.handle('snippets:get-state', async () => {
 })
 
 ipcMain.handle('snippets:set-state', async (_event, payload) => {
-  refreshDbFromDisk('snippets:set-state')
+  refreshDbFromDisk('snippets:set-state', true)
   const normalized = normalizeSnippetState(payload)
   db.data.snippets = normalized.items
   db.data.snippet_meta = {
@@ -1309,7 +1440,7 @@ ipcMain.handle('snippets:set-state', async (_event, payload) => {
 })
 
 ipcMain.handle('vault:status', async () => {
-  refreshDbFromDisk('vault:status')
+  refreshDbFromDisk('vault:status', true)
   const row = db.prepare('SELECT id FROM vault_meta WHERE id = 1').get()
   const state = { ok: true, initialized: !!row, unlocked: !!vaultKey }
   logMain(`vault:status initialized=${state.initialized} unlocked=${state.unlocked}`)
@@ -1318,7 +1449,7 @@ ipcMain.handle('vault:status', async () => {
 
 ipcMain.handle('vault:set-master', async (_event, payload) => {
   try {
-    refreshDbFromDisk('vault:set-master')
+    refreshDbFromDisk('vault:set-master', true)
     const pwd = String(payload?.masterPassword || '')
     if (!pwd || pwd.length < 1) return { ok: false, error: '主密码不能为空' }
 
@@ -1339,7 +1470,7 @@ ipcMain.handle('vault:set-master', async (_event, payload) => {
 
 ipcMain.handle('vault:unlock', async (_event, payload) => {
   try {
-    refreshDbFromDisk('vault:unlock')
+    refreshDbFromDisk('vault:unlock', true)
     const pwd = String(payload?.masterPassword || '')
     if (!pwd) return { ok: false, error: '请输入主密码' }
 
@@ -1364,7 +1495,7 @@ ipcMain.handle('vault:unlock', async (_event, payload) => {
 
 ipcMain.handle('vault:reset', async () => {
   try {
-    refreshDbFromDisk('vault:reset')
+    refreshDbFromDisk('vault:reset', true)
     db.data.vault_meta = null
     db.data.vault_keys = []
     db.setEncryptionKey(null)
@@ -1378,7 +1509,7 @@ ipcMain.handle('vault:reset', async () => {
 })
 
 ipcMain.handle('vault:key-save', async (_event, payload) => {
-  refreshDbFromDisk('vault:key-save')
+  refreshDbFromDisk('vault:key-save', true)
   if (!vaultKey) return { ok: false, error: '密钥仓库未解锁' }
   const sshpk = await getSshpk()
   const id = payload.id || uuidv4()
