@@ -3141,7 +3141,9 @@ onBeforeUnmount(() => {
 <template>
   <div class="layout" :class="{ 'terminal-layout': focusTerminal }">
     <aside class="sidebar">
-      <div class="brand"><img src="/logo-astrashell.svg?v=10" alt="AstraShell" class="brand-logo" /> AstraShell</div>
+      <div class="brand">
+        <img src="/logo-astrashell-app.png?v=11" alt="AstraShell" class="brand-logo brand-logo-wide" />
+      </div>
       <ul class="sidebar-nav">
         <li :class="{ active: nav === 'hosts' }" @click="focusTerminal = false; nav = 'hosts'"><Server :size="16" /> 主机管理</li>
         <li :class="{ active: nav === 'sftp' }" @click="focusTerminal = false; nav = 'sftp'"><FolderTree :size="16" /> 文件传输</li>
@@ -3153,10 +3155,11 @@ onBeforeUnmount(() => {
         <li :class="{ active: nav === 'logs' }" @click="focusTerminal = false; nav = 'logs'"><Pencil :size="16" /> 操作日志</li>
       </ul>
       <div class="sidebar-footer">
-        <img src="/logo-astrashell.svg?v=10" alt="AstraShell Logo" class="sidebar-footer-logo" />
+        <img src="/logo-astrashell-app.png?v=11" alt="AstraShell Logo" class="sidebar-footer-logo sidebar-footer-logo-wide" />
         <div class="sidebar-footer-text">
           <div class="sidebar-footer-title">AstraShell</div>
           <div class="sidebar-footer-sub">制作人：GetIDC</div>
+          <a class="sidebar-footer-link" href="http://astrashell.851108.xyz" target="_blank" rel="noreferrer">astrashell.851108.xyz</a>
         </div>
       </div>
     </aside>
@@ -3852,6 +3855,7 @@ onBeforeUnmount(() => {
           </div>
           <a class="manual-update-link" :href="updateInfo.downloadUrl" target="_blank" rel="noreferrer">{{ updateInfo.downloadUrl }}</a>
         </div>
+        <p class="hint">官网：<a class="manual-update-link" href="http://astrashell.851108.xyz" target="_blank" rel="noreferrer">http://astrashell.851108.xyz</a></p>
         <p class="hint">发布新版本到 GitHub Release 后，应用启动会自动检查；也可手动检查并一键更新。</p>
         <div class="divider"></div>
         <h3>本地存储</h3>
@@ -4032,17 +4036,22 @@ onBeforeUnmount(() => {
 <style scoped>
 .layout { display: grid; grid-template-columns: 220px 1fr; height: 100vh; padding-top: 0; }
 .sidebar { background: linear-gradient(180deg, #eef2f7 0%, #e9edf3 100%); border-right: 1px solid var(--border); padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
-.brand { font-weight: 800; margin-bottom: 6px; font-size: 20px; display: flex; align-items: center; gap: 10px; }
+.brand { margin-bottom: 6px; display: flex; justify-content: center; align-items: center; padding: 4px 0 8px; }
 .brand-logo { width: 52px; height: 52px; border-radius: 0; object-fit: contain; }
+.brand-logo-wide { width: 170px; height: auto; max-width: 100%; }
 .sidebar ul { list-style: none; padding: 0; margin: 0; }
 .sidebar-nav { flex: 1; min-height: 0; overflow: auto; }
 .sidebar li { padding: 10px 10px; border-radius: 10px; color: var(--text-main); cursor: pointer; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
 .sidebar li:hover { background: #dfe5ee; }
 .sidebar li.active { background: #dbeafe; color: #1d4ed8; font-weight: 600; }
-.sidebar-footer { border: 1px solid #d4dde8; border-radius: 12px; background: #f7fafd; padding: 10px; display: flex; align-items: center; gap: 10px; }
+.sidebar-footer { border: 1px solid #d4dde8; border-radius: 12px; background: #f7fafd; padding: 10px; display: grid; gap: 8px; justify-items: center; }
 .sidebar-footer-logo { width: 34px; height: 34px; border-radius: 0; object-fit: contain; flex-shrink: 0; }
+.sidebar-footer-logo-wide { width: 144px; height: auto; }
+.sidebar-footer-text { width: 100%; display: grid; justify-items: center; gap: 2px; }
 .sidebar-footer-title { font-size: 13px; font-weight: 700; color: #0f172a; }
 .sidebar-footer-sub { font-size: 11px; color: #64748b; }
+.sidebar-footer-link { font-size: 11px; color: #2563eb; text-decoration: none; }
+.sidebar-footer-link:hover { text-decoration: underline; }
 .main { padding: 12px; padding-bottom: 42px; display: flex; flex-direction: column; gap: 10px; height: 100vh; overflow: hidden; }
 .top-actions { flex-shrink: 0; }
 .terminal-top-actions { display: flex; flex-direction: column; gap: 8px; background: #f5f8fc; border: 1px solid #dbe3ee; border-radius: 12px; padding: 8px 10px; }
