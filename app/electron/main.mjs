@@ -17,11 +17,20 @@ try {
 } catch {}
 const serialPorts = new Map()
 const sshSessions = new Map()
+const localShellSessions = new Map()
+const serialInputBuffers = new Map()
+const sshInputBuffers = new Map()
+const localInputBuffers = new Map()
+const serialOutputBuffers = new Map()
+const sshOutputBuffers = new Map()
+const localOutputBuffers = new Map()
+const responseLogBuffers = new Map()
 let db
 let vaultKey = null
 let SerialPortCtor = null
 let SSHClientCtor = null
 let sshpkModule = null
+let nodePtySpawn = null
 let serialModuleLoadError = ''
 let autoUpdater = null
 let updaterInitialized = false
@@ -34,12 +43,186 @@ let activeDbPath = ''
 let dbWatchTimer = null
 const DATA_FILE_NAME = 'astrashell.data.json'
 const LEGACY_DB_FILE_NAME = 'lightterm.db'
+const MAX_AUDIT_LOGS = 5000
 const macManualInstallTip = '当前构建未使用 Developer ID 签名，无法一键安装更新。请从 GitHub Release 下载 DMG 手动覆盖安装。'
 const githubReleaseProvider = {
   provider: 'github',
   owner: 'getiid',
   repo: 'AstraShell',
   releaseType: 'release',
+}
+
+function stripAnsi(input) {
+  return String(input || '')
+    // OSC: \x1b] ... \x07 or \x1b\
+    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, '')
+    // CSI / single-char escapes
+    .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '')
+}
+
+function sanitizeCommandLine(input) {
+  return stripAnsi(input)
+    .replace(/[\x00-\x08\x0B-\x1F\x7F]/g, '')
+    .trim()
+}
+
+function sanitizeOutputLine(input) {
+  return stripAnsi(input)
+    // 某些 SSH 场景会留下 OSC 片段前缀，如 "0;root@host:..."
+    .replace(/^\d+;(?=[\w.-]+@)/, '')
+    .replace(/[\x00-\x08\x0B-\x1F\x7F]/g, '')
+    .trim()
+}
+
+function isLikelyPromptLine(text) {
+  const value = String(text || '').trim()
+  if (!value) return true
+  const compact = value.replace(/\s+/g, ' ')
+  if (/^[\w.-]+@[\w.-]+.*[>%#$]\s*$/.test(compact)) return true
+  if (/^\[[^\]]+@[\w.-]+\s+[^\]]+\][>%#$]\s*$/.test(compact)) return true
+  if (/^[\w.-]+@[\w.-]+:.*\[[^\]]+\][>%#$](?:\s+.*)?$/.test(compact)) return true
+  if (/^\d+;[\w.-]+@[\w.-]+:.*\[[^\]]+\][>%#$](?:\s+.*)?$/.test(compact)) return true
+  return false
+}
+
+function ensureLogsArray(currentDb) {
+  if (!currentDb?.data) return []
+  if (!Array.isArray(currentDb.data.logs)) currentDb.data.logs = []
+  return currentDb.data.logs
+}
+
+function appendAuditLog(payload = {}) {
+  try {
+    const currentDb = requireDbReady({ allowCreate: true })
+    const logs = ensureLogsArray(currentDb)
+    const now = Date.now()
+    const row = {
+      id: String(payload.id || uuidv4()),
+      ts: Number(payload.ts || now),
+      source: String(payload.source || 'app'),
+      action: String(payload.action || 'event'),
+      target: String(payload.target || ''),
+      content: String(payload.content || ''),
+      level: String(payload.level || 'info'),
+    }
+    logs.unshift(row)
+    if (logs.length > MAX_AUDIT_LOGS) logs.splice(MAX_AUDIT_LOGS)
+    currentDb.save()
+    broadcast('audit:appended', row)
+    return row
+  } catch (e) {
+    logMain(`appendAuditLog failed: ${e?.message || e}`)
+    return null
+  }
+}
+
+function listAuditLogsFromDb(currentDb, payload = {}) {
+  const limitRaw = Number(payload?.limit || 300)
+  const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 300, 1), MAX_AUDIT_LOGS)
+  const source = String(payload?.source || '').trim()
+  const keyword = String(payload?.keyword || '').trim().toLowerCase()
+  let rows = [...ensureLogsArray(currentDb)].map((row) => {
+    const next = { ...row }
+    const content = String(next?.content || '')
+    const action = String(next?.action || '')
+    if (content.includes('session=') || content.includes('reason=')) {
+      if (action === 'connect') next.content = '连接成功'
+      else if (action === 'disconnect' && /reason=manual/i.test(content)) next.content = '用户手动断开'
+      else if (action === 'disconnect' && /reason=app-exit/i.test(content)) next.content = '应用退出，自动断开'
+      else if (action === 'disconnect') next.content = '会话已断开'
+    }
+    return next
+  })
+  if (source && source !== 'all') rows = rows.filter((item) => String(item?.source || '') === source)
+  if (keyword) {
+    rows = rows.filter((item) => `${item?.action || ''} ${item?.target || ''} ${item?.content || ''}`.toLowerCase().includes(keyword))
+  }
+  return rows.slice(0, limit)
+}
+
+function extractCommandLines(bufferMap, sessionId, chunk) {
+  const prev = bufferMap.get(sessionId) || ''
+  const merged = `${prev}${String(chunk || '')}`
+  const normalized = merged.replace(/\r/g, '\n')
+  const lines = normalized.split('\n')
+  const tail = String(lines.pop() || '').slice(-4000)
+  bufferMap.set(sessionId, tail)
+  return lines
+}
+
+function logCommandLines(bufferMap, sessionId, chunk, source, target) {
+  flushResponseLogsForSession(source, sessionId)
+  const lines = extractCommandLines(bufferMap, sessionId, chunk)
+  for (const line of lines) {
+    const content = sanitizeCommandLine(line)
+    if (!content) continue
+    appendAuditLog({ source, action: 'command', target, content })
+  }
+}
+
+function responseLogBufferKey(source, sessionId) {
+  return `${String(source || 'app')}::${String(sessionId || '-')}`
+}
+
+function flushResponseLogBuffer(key) {
+  const state = responseLogBuffers.get(key)
+  if (!state) return
+  if (state.timer) clearTimeout(state.timer)
+  const lines = Array.isArray(state.lines) ? state.lines : []
+  const content = lines.join('\n').trim().slice(0, 4000)
+  if (content) {
+    appendAuditLog({
+      source: String(state.source || 'app'),
+      action: 'response',
+      target: String(state.target || ''),
+      content,
+    })
+  }
+  responseLogBuffers.delete(key)
+}
+
+function flushResponseLogsForSession(source, sessionId) {
+  const key = responseLogBufferKey(source, sessionId)
+  flushResponseLogBuffer(key)
+}
+
+function flushAllResponseLogs() {
+  for (const key of [...responseLogBuffers.keys()]) flushResponseLogBuffer(key)
+}
+
+function appendResponseLogLine(source, sessionId, target, line) {
+  const key = responseLogBufferKey(source, sessionId)
+  let state = responseLogBuffers.get(key)
+  if (!state) {
+    state = {
+      source: String(source || 'app'),
+      target: String(target || ''),
+      lines: [],
+      timer: null,
+    }
+    responseLogBuffers.set(key, state)
+  }
+  if (String(target || '').trim()) state.target = String(target || '').trim()
+  state.lines.push(String(line || ''))
+  if (state.lines.length > 120) {
+    flushResponseLogBuffer(key)
+    return
+  }
+  if (state.timer) clearTimeout(state.timer)
+  state.timer = setTimeout(() => flushResponseLogBuffer(key), 240)
+}
+
+function logOutputLines(bufferMap, sessionId, chunk, source, target) {
+  const lines = extractCommandLines(bufferMap, sessionId, chunk)
+  for (const line of lines) {
+    const content = sanitizeOutputLine(line)
+    if (!content) continue
+    if (isLikelyPromptLine(content)) {
+      flushResponseLogsForSession(source, sessionId)
+      continue
+    }
+    appendResponseLogLine(source, sessionId, target, content.slice(0, 600))
+  }
 }
 
 function checkMacAutoInstallSupport() {
@@ -100,6 +283,15 @@ async function getAutoUpdater() {
   autoUpdater = mod.autoUpdater || mod.default?.autoUpdater || null
   if (!autoUpdater) throw new Error('无法加载自动更新模块')
   return autoUpdater
+}
+
+async function getNodePtySpawn() {
+  if (nodePtySpawn) return nodePtySpawn
+  const mod = await import('node-pty')
+  const spawnFn = mod?.spawn || mod?.default?.spawn
+  if (typeof spawnFn !== 'function') throw new Error('无法加载 node-pty')
+  nodePtySpawn = spawnFn
+  return nodePtySpawn
 }
 
 function getMacAutoInstallSupport() {
@@ -321,6 +513,7 @@ class JsonDB {
       snippet_meta: { extra_categories: [], updated_at: 0 },
       vault_meta: null,
       vault_keys: [],
+      logs: [],
     }
     this.load()
   }
@@ -332,9 +525,10 @@ class JsonDB {
   getFileSignature() {
     if (!fs.existsSync(this.filePath)) return ''
     try {
-      const raw = fs.readFileSync(this.filePath)
-      const hash = crypto.createHash('sha1').update(raw).digest('hex')
-      return `${raw.length}:${hash}`
+      const stat = fs.statSync(this.filePath)
+      const size = Number(stat?.size || 0)
+      const mtimeMs = Number(stat?.mtimeMs || 0)
+      return `${size}:${Math.trunc(mtimeMs)}`
     } catch {
       return ''
     }
@@ -358,6 +552,7 @@ class JsonDB {
         }
         : { extra_categories: [], updated_at: 0 }
       this.data.vault_keys = Array.isArray(parsed?.vault_keys) ? parsed.vault_keys : []
+      this.data.logs = Array.isArray(parsed?.logs) ? parsed.logs : []
       return true
     } catch {
       return false
@@ -379,6 +574,7 @@ class JsonDB {
         this.data.snippets = []
         this.data.snippet_meta = { extra_categories: [], updated_at: 0 }
         this.data.vault_keys = []
+        this.data.logs = []
         this.applyDecryptedPayload()
       } else {
         this.encryptedPayload = null
@@ -420,12 +616,14 @@ class JsonDB {
           ? this.data.snippet_meta
           : { extra_categories: [], updated_at: 0 },
         vault_keys: Array.isArray(this.data.vault_keys) ? this.data.vault_keys : [],
+        logs: Array.isArray(this.data.logs) ? this.data.logs : [],
       }), this.encryptionKey)
       this.encryptedPayload = encryptedPayload
       persist.hosts = []
       persist.snippets = []
       persist.snippet_meta = { extra_categories: [], updated_at: 0 }
       persist.vault_keys = []
+      persist.logs = []
       persist.encrypted_payload = encryptedPayload
     } else {
       this.encryptedPayload = null
@@ -512,6 +710,15 @@ function getSnippetUpdatedAt(row) {
   return Number(row?.updatedAt || row?.updated_at || 0)
 }
 
+function getAuditUpdatedAt(row) {
+  return Number(row?.ts || row?.updatedAt || row?.updated_at || 0)
+}
+
+function mergeAuditLogs(baseRows, incomingRows) {
+  const merged = mergeRowsById(baseRows, incomingRows, getAuditUpdatedAt)
+  return merged.sort((a, b) => getAuditUpdatedAt(b) - getAuditUpdatedAt(a)).slice(0, MAX_AUDIT_LOGS)
+}
+
 function mergeRowsById(baseRows, incomingRows, getUpdatedAt) {
   const merged = new Map()
   for (const row of Array.isArray(baseRows) ? baseRows : []) {
@@ -556,6 +763,7 @@ function mergeDbData(baseData, incomingData) {
     snippet_meta: mergeSnippetMeta(baseData?.snippet_meta, incomingData?.snippet_meta),
     vault_meta: mergeVaultMeta(baseData?.vault_meta, incomingData?.vault_meta),
     vault_keys: mergeRowsById(baseData?.vault_keys, incomingData?.vault_keys, getVaultKeyUpdatedAt),
+    logs: mergeAuditLogs(baseData?.logs, incomingData?.logs),
   }
 }
 
@@ -759,6 +967,8 @@ function refreshDbFromDisk(reason = 'manual', force = false) {
     let changed = false
     if (force) {
       const prevSignature = currentDb.lastFileSignature
+      const nextSignature = currentDb.getFileSignature()
+      if (nextSignature && nextSignature === prevSignature) return false
       currentDb.load()
       changed = prevSignature !== currentDb.lastFileSignature
     } else {
@@ -779,7 +989,7 @@ function startDbWatchTimer() {
     if (changed) {
       broadcast('storage:data-changed', { changedAt: Date.now() })
     }
-  }, 1800)
+  }, 3200)
   dbWatchTimer.unref?.()
 }
 
@@ -808,6 +1018,7 @@ function getStorageMeta() {
     hosts: Array.isArray(currentDb?.data?.hosts) ? currentDb.data.hosts.length : 0,
     snippets: Array.isArray(currentDb?.data?.snippets) ? currentDb.data.snippets.length : 0,
     vaultKeys: Array.isArray(currentDb?.data?.vault_keys) ? currentDb.data.vault_keys.length : 0,
+    logs: Array.isArray(currentDb?.data?.logs) ? currentDb.data.logs.length : 0,
   }
 }
 
@@ -822,11 +1033,195 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function buildShellSpawnOptions(cwd) {
+  const nextCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir()
+  const env = {
+    ...process.env,
+    LANG: process.env.LANG || 'zh_CN.UTF-8',
+    LC_ALL: process.env.LC_ALL || 'zh_CN.UTF-8',
+    TERM: process.env.TERM || 'xterm-256color',
+  }
+  return { cwd: nextCwd, env }
+}
+
+function getLocalShellCommand() {
+  if (process.platform === 'win32') return process.env.COMSPEC || 'cmd.exe'
+  return process.env.SHELL || '/bin/zsh'
+}
+
+let zshDotDirCache = ''
+function ensureAstraZshDotDir() {
+  if (zshDotDirCache && fs.existsSync(zshDotDirCache)) return zshDotDirCache
+  const dir = path.join(app.getPath('userData'), 'runtime', 'zsh-dotdir')
+  fs.mkdirSync(dir, { recursive: true })
+  const completionFile = path.join(dir, '.astrashell-completion.zsh')
+  const completionUserFile = path.join(dir, '.astrashell-completion.user.zsh')
+  fs.writeFileSync(completionFile, [
+    'typeset -ga _astrashell_npm_primary',
+    '_astrashell_npm_primary=(',
+    '  run dev start build test lint preview',
+    '  install i ci add remove rm uninstall update outdated',
+    '  list ls exec create init doctor cache explain config pkg',
+    '  publish version audit fund login logout whoami',
+    ')',
+    'typeset -ga _astrashell_npm_run',
+    '_astrashell_npm_run=(dev build start test lint preview dist)',
+    '',
+    '_astrashell_npm_complete() {',
+    '  local -a primary runWords',
+    '  primary=(${_astrashell_npm_primary})',
+    '  runWords=(${_astrashell_npm_run})',
+    '  if (( CURRENT == 2 )); then',
+    "    _describe 'npm command' primary",
+    '    return',
+    '  fi',
+    "  if [[ \"${words[2]}\" == \"run\" && CURRENT == 3 ]]; then",
+    "    _describe 'npm script' runWords",
+    '    return',
+    '  fi',
+    "  if [[ \"${words[2]}\" == \"create\" && CURRENT == 3 ]]; then",
+    "    _values 'initializer' 'vite@latest' 'next-app@latest' 'react-app@latest'",
+    '    return',
+    '  fi',
+    '}',
+    'compdef _astrashell_npm_complete npm',
+    '',
+  ].join('\n'), 'utf8')
+  if (!fs.existsSync(completionUserFile)) {
+    fs.writeFileSync(completionUserFile, [
+      '# AstraShell custom completion library',
+      '# Example:',
+      '# _astrashell_npm_run+=(deploy release staging)',
+      '',
+    ].join('\n'), 'utf8')
+  }
+  fs.writeFileSync(path.join(dir, '.zshenv'), [
+    'if [[ -f "$HOME/.zshenv" ]]; then',
+    '  source "$HOME/.zshenv"',
+    'fi',
+    '',
+  ].join('\n'), 'utf8')
+  fs.writeFileSync(path.join(dir, '.zprofile'), [
+    'if [[ -f "$HOME/.zprofile" ]]; then',
+    '  source "$HOME/.zprofile"',
+    'fi',
+    '',
+  ].join('\n'), 'utf8')
+  fs.writeFileSync(path.join(dir, '.zshrc'), [
+    'if [[ -f "$HOME/.zshrc" ]]; then',
+    '  source "$HOME/.zshrc"',
+    'fi',
+    'autoload -Uz compinit 2>/dev/null',
+    'if [[ -z "${_ASTRA_COMPINIT_DONE:-}" ]]; then',
+    '  compinit -i 2>/dev/null',
+    '  _ASTRA_COMPINIT_DONE=1',
+    'fi',
+    'if [[ -f "$ZDOTDIR/.astrashell-completion.zsh" ]]; then',
+    '  source "$ZDOTDIR/.astrashell-completion.zsh"',
+    'fi',
+    'if [[ -f "$ZDOTDIR/.astrashell-completion.user.zsh" ]]; then',
+    '  source "$ZDOTDIR/.astrashell-completion.user.zsh"',
+    'fi',
+    'unsetopt PROMPT_SP 2>/dev/null',
+    "PROMPT_EOL_MARK=''",
+    "PROMPT='%n@%m %1~ > '",
+    "RPROMPT=''",
+    '',
+  ].join('\n'), 'utf8')
+  fs.writeFileSync(path.join(dir, '.zlogin'), [
+    'if [[ -f "$HOME/.zlogin" ]]; then',
+    '  source "$HOME/.zlogin"',
+    'fi',
+    '',
+  ].join('\n'), 'utf8')
+  zshDotDirCache = dir
+  return dir
+}
+
+function applyLocalShellRuntimeEnv(shellCmd, env) {
+  if (process.platform === 'win32') return env
+  const shellName = path.basename(String(shellCmd || '')).toLowerCase()
+  if (shellName.includes('zsh')) {
+    try {
+      env.ZDOTDIR = ensureAstraZshDotDir()
+    } catch {}
+  } else if (shellName.includes('bash')) {
+    env.PS1 = '\\u@\\h \\W > '
+  }
+  return env
+}
+
+function buildShellColorInitScript() {
+  return [
+    'export TERM="${TERM:-xterm-256color}"',
+    'export CLICOLOR=1',
+    'export CLICOLOR_FORCE=1',
+    '_astrashell_ls(){ command ls --color=auto "$@" 2>/dev/null || command ls -G "$@"; }',
+    'ls(){ _astrashell_ls "$@"; }',
+    'll(){ _astrashell_ls -alF "$@"; }',
+  ].join('; ')
+}
+
+function closeLocalShellSession(sessionId, reason = 'manual') {
+  const session = localShellSessions.get(sessionId)
+  if (!session) return false
+  if (reason === 'reconnect' || reason === 'app-exit') session.silentClose = true
+  try {
+    session.proc?.write?.('exit\r')
+  } catch {}
+  try {
+    session.proc?.kill?.()
+  } catch {}
+  localShellSessions.delete(sessionId)
+  localInputBuffers.delete(sessionId)
+  localOutputBuffers.delete(sessionId)
+  flushResponseLogsForSession('local', sessionId)
+  if (reason !== 'reconnect' && reason !== 'app-exit') {
+    appendAuditLog({
+      source: 'local',
+      action: 'disconnect',
+      target: session.target || sessionId,
+      content: '用户手动断开',
+    })
+  }
+  return true
+}
+
+async function closeAllLocalShellSessions(reason = 'app-exit') {
+  const entries = [...localShellSessions.entries()]
+  if (!entries.length) return
+  logMain(`local cleanup start reason=${reason} count=${entries.length}`)
+  localShellSessions.clear()
+  localInputBuffers.clear()
+  localOutputBuffers.clear()
+  flushAllResponseLogs()
+  await Promise.allSettled(entries.map(async ([sessionId, session]) => {
+    session.silentClose = true
+    try {
+      session?.proc?.write?.('exit\r')
+    } catch {}
+    await wait(50)
+    try {
+      session?.proc?.kill?.()
+    } catch {}
+    appendAuditLog({
+      source: 'local',
+      action: 'disconnect',
+      target: session?.target || sessionId,
+      content: reason === 'app-exit' ? '应用退出，自动断开' : '会话关闭',
+    })
+  }))
+  logMain(`local cleanup end reason=${reason}`)
+}
+
 async function closeAllSshSessions(reason = 'app-exit') {
   const entries = [...sshSessions.entries()]
   if (!entries.length) return
   logMain(`ssh cleanup start reason=${reason} count=${entries.length}`)
   sshSessions.clear()
+  sshInputBuffers.clear()
+  sshOutputBuffers.clear()
+  flushAllResponseLogs()
   await Promise.allSettled(entries.map(async ([sessionId, session]) => {
     try {
       session?.stream?.end?.('exit\n')
@@ -839,6 +1234,12 @@ async function closeAllSshSessions(reason = 'app-exit') {
     } catch (e) {
       logMain(`ssh cleanup conn end failed reason=${reason} session=${sessionId} error=${e?.message || e}`)
     }
+    appendAuditLog({
+      source: 'ssh',
+      action: 'disconnect',
+      target: String(session?.target || `${session?.conn?.config?.username || 'user'}@${session?.conn?.config?.host || 'host'}:${Number(session?.conn?.config?.port || 22)}`),
+      content: reason === 'app-exit' ? '应用退出，自动断开' : '会话关闭',
+    })
   }))
   logMain(`ssh cleanup end reason=${reason}`)
 }
@@ -850,6 +1251,10 @@ async function closeAllSerialPorts(reason = 'app-exit') {
   await Promise.allSettled(entries.map(([key, port]) => new Promise((resolve) => {
     const finish = () => {
       serialPorts.delete(key)
+      serialInputBuffers.delete(key)
+      serialOutputBuffers.delete(key)
+      flushResponseLogsForSession('serial', key)
+      appendAuditLog({ source: 'serial', action: 'disconnect', target: String(key || ''), content: reason === 'app-exit' ? '应用退出，自动断开' : '串口已断开' })
       resolve(true)
     }
     try {
@@ -939,6 +1344,7 @@ async function cleanupAppRuntimeForInstall(reason = 'update-install') {
     await Promise.allSettled([
       closeAllSshSessions(reason),
       closeAllSerialPorts(reason),
+      closeAllLocalShellSessions(reason),
     ])
     await closeAllWindowsForInstall(reason)
     logMain(`runtime cleanup end reason=${reason}`)
@@ -1252,6 +1658,9 @@ app.on('before-quit', () => {
     clearInterval(dbWatchTimer)
     dbWatchTimer = null
   }
+  void closeAllSshSessions('before-quit')
+  void closeAllSerialPorts('before-quit')
+  void closeAllLocalShellSessions('before-quit')
 })
 
 ipcMain.handle('app:get-storage', async () => {
@@ -1260,7 +1669,7 @@ ipcMain.handle('app:get-storage', async () => {
 })
 
 ipcMain.handle('app:get-storage-meta', async () => {
-  refreshDbFromDisk('app:get-storage-meta', true)
+  refreshDbFromDisk('app:get-storage-meta', false)
   return { ok: true, ...getStorageMeta() }
 })
 
@@ -1350,6 +1759,38 @@ ipcMain.handle('clipboard:write', async (_event, payload) => {
     return { ok: true }
   } catch (e) {
     return { ok: false, error: e?.message || '写入剪贴板失败' }
+  }
+})
+
+ipcMain.handle('audit:list', async (_event, payload) => {
+  try {
+    refreshDbFromDisk('audit:list')
+    const currentDb = requireDbReady()
+    return { ok: true, items: listAuditLogsFromDb(currentDb, payload) }
+  } catch (e) {
+    return { ok: false, error: e?.message || '读取日志失败', items: [] }
+  }
+})
+
+ipcMain.handle('audit:append', async (_event, payload) => {
+  try {
+    const row = appendAuditLog(payload)
+    if (!row) return { ok: false, error: '写入日志失败' }
+    return { ok: true, item: row }
+  } catch (e) {
+    return { ok: false, error: e?.message || '写入日志失败' }
+  }
+})
+
+ipcMain.handle('audit:clear', async () => {
+  try {
+    refreshDbFromDisk('audit:clear', true)
+    const currentDb = requireDbReady()
+    currentDb.data.logs = []
+    currentDb.save()
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e?.message || '清空日志失败' }
   }
 })
 
@@ -1733,23 +2174,191 @@ ipcMain.handle('serial:open', async (_event, options) => {
       dataBits: Number(options.dataBits || 8),
       stopBits: Number(options.stopBits || 1),
       parity: options.parity || 'none',
+      rtscts: !!options.rtscts,
+      dsrdtr: !!options.dsrdtr,
+      xon: !!options.xon,
+      xoff: !!options.xoff,
       autoOpen: true,
     })
     serialPorts.set(key, port)
-    port.on('data', (data) => broadcast('serial:data', { path: key, data: data.toString('utf8') }))
-    port.on('error', (err) => broadcast('serial:error', { path: key, error: err.message }))
+    serialInputBuffers.set(key, '')
+    serialOutputBuffers.set(key, '')
+    port.on('data', (data) => {
+      const text = data.toString('utf8')
+      broadcast('serial:data', { path: key, data: text })
+      logOutputLines(serialOutputBuffers, key, text, 'serial', key)
+    })
+    port.on('error', (err) => {
+      const message = err?.message || '串口异常'
+      appendAuditLog({ source: 'serial', action: 'error', target: key, content: message, level: 'error' })
+      broadcast('serial:error', { path: key, error: message })
+    })
+    appendAuditLog({
+      source: 'serial',
+      action: 'connect',
+      target: key,
+      content: `连接成功（波特率 ${Number(options.baudRate || 115200)}，数据位 ${Number(options.dataBits || 8)}，停止位 ${Number(options.stopBits || 1)}，校验 ${options.parity || 'none'}）`,
+    })
     return { ok: true }
   } catch (e) {
     const message = serialModuleLoadError || e?.message || '串口模块不可用'
     logMain(`serial:open failed: ${message}`)
+    appendAuditLog({ source: 'serial', action: 'error', target: String(options?.path || ''), content: message, level: 'error' })
     return { ok: false, error: message }
   }
 })
 ipcMain.handle('serial:send', async (_event, payload) => {
   const port = serialPorts.get(payload.path)
   if (!port) return { ok: false, error: '串口未打开' }
-  const data = payload.isHex ? Buffer.from(payload.data.replace(/\s+/g, ''), 'hex') : payload.data
+  const textData = String(payload?.data || '')
+  const data = payload.isHex ? Buffer.from(textData.replace(/\s+/g, ''), 'hex') : textData
   await new Promise((resolve, reject) => port.write(data, (err) => (err ? reject(err) : resolve(true))))
+  const target = String(payload.path || '')
+  if (payload.isHex) {
+    appendAuditLog({ source: 'serial', action: 'command', target, content: textData })
+  } else if (textData.includes('\n') || textData.includes('\r')) {
+    logCommandLines(serialInputBuffers, target, textData, 'serial', target)
+  } else if (textData.length > 1) {
+    serialInputBuffers.set(target, '')
+    appendAuditLog({ source: 'serial', action: 'command', target, content: textData })
+  } else {
+    extractCommandLines(serialInputBuffers, target, textData)
+  }
+  return { ok: true }
+})
+
+ipcMain.handle('serial:close', async (_event, payload) => {
+  const key = String(payload?.path || '')
+  const port = serialPorts.get(key)
+  if (!port) return { ok: true }
+  return await new Promise((resolve) => {
+    const done = (ok, error = '') => {
+      serialPorts.delete(key)
+      serialInputBuffers.delete(key)
+      serialOutputBuffers.delete(key)
+      flushResponseLogsForSession('serial', key)
+      if (ok) {
+        appendAuditLog({ source: 'serial', action: 'disconnect', target: key, content: '手动断开' })
+        resolve({ ok: true })
+      } else {
+        appendAuditLog({ source: 'serial', action: 'error', target: key, content: error, level: 'error' })
+        resolve({ ok: false, error })
+      }
+    }
+    try {
+      if (port.isOpen === false || typeof port.close !== 'function') {
+        try { port.destroy?.() } catch {}
+        done(true)
+        return
+      }
+      port.close((err) => {
+        if (err) return done(false, err?.message || '关闭串口失败')
+        done(true)
+      })
+    } catch (e) {
+      done(false, e?.message || '关闭串口失败')
+    }
+  })
+})
+
+ipcMain.handle('local:connect', async (_event, payload) => {
+  const sessionId = String(payload?.sessionId || '').trim()
+  if (!sessionId) return { ok: false, error: '缺少 sessionId' }
+  closeLocalShellSession(sessionId, 'reconnect')
+  const shellCmd = getLocalShellCommand()
+  const options = buildShellSpawnOptions(String(payload?.cwd || '').trim())
+  applyLocalShellRuntimeEnv(shellCmd, options.env)
+  try {
+    const ptySpawn = await getNodePtySpawn()
+    const args = process.platform === 'win32' ? [] : ['-i', '-l']
+    const proc = ptySpawn(shellCmd, args, {
+      cwd: options.cwd,
+      env: options.env,
+      cols: Number(payload?.cols || 120),
+      rows: Number(payload?.rows || 30),
+      name: process.platform === 'win32' ? 'xterm-color' : 'xterm-256color',
+    })
+    const target = '本地终端'
+    const sessionRef = { proc, target, silentClose: false }
+    localShellSessions.set(sessionId, sessionRef)
+    localInputBuffers.set(sessionId, '')
+    localOutputBuffers.set(sessionId, '')
+    const localColorInit = buildShellColorInitScript()
+    setTimeout(() => {
+      try { proc.write(`${localColorInit}\r`) } catch {}
+    }, 120)
+    proc.onData((chunk) => {
+      const text = String(chunk || '')
+      const buffer = Buffer.from(text, 'utf8')
+      broadcast('local:data', {
+        sessionId,
+        data: text,
+        dataBase64: buffer.toString('base64'),
+      })
+      logOutputLines(localOutputBuffers, sessionId, text, 'local', target)
+    })
+    proc.onExit(({ exitCode, signal }) => {
+      const active = localShellSessions.get(sessionId)
+      if (active !== sessionRef) {
+        localInputBuffers.delete(sessionId)
+        localOutputBuffers.delete(sessionId)
+        return
+      }
+      localShellSessions.delete(sessionId)
+      localInputBuffers.delete(sessionId)
+      localOutputBuffers.delete(sessionId)
+      flushResponseLogsForSession('local', sessionId)
+      if (sessionRef.silentClose) return
+      broadcast('local:close', { sessionId, code: Number(exitCode || 0), signal: String(signal || '') })
+      appendAuditLog({
+        source: 'local',
+        action: 'disconnect',
+        target: sessionRef.target || target,
+        content: `终端已退出（code=${Number(exitCode || 0)}）`,
+      })
+    })
+    appendAuditLog({ source: 'local', action: 'connect', target, content: `连接成功（目录：${options.cwd}）` })
+    return { ok: true, shell: shellCmd, cwd: options.cwd }
+  } catch (e) {
+    const message = e?.message || '启动本地终端失败'
+    appendAuditLog({ source: 'local', action: 'error', target: shellCmd, content: message, level: 'error' })
+    return { ok: false, error: message }
+  }
+})
+
+ipcMain.handle('local:write', async (_event, payload) => {
+  const sessionId = String(payload?.sessionId || '').trim()
+  const session = localShellSessions.get(sessionId)
+  if (!session) return { ok: false, error: '本地终端会话不存在' }
+  const data = String(payload?.data || '')
+  if (!data) return { ok: true }
+  try {
+    session.proc?.write?.(data)
+  } catch {
+    return { ok: false, error: '写入本地终端失败' }
+  }
+  logCommandLines(localInputBuffers, sessionId, data, 'local', session.target || sessionId)
+  return { ok: true }
+})
+
+ipcMain.handle('local:resize', async (_event, payload) => {
+  const sessionId = String(payload?.sessionId || '').trim()
+  const session = localShellSessions.get(sessionId)
+  if (!session) return { ok: false, error: '本地终端会话不存在' }
+  const cols = Math.max(20, Number(payload?.cols || 120))
+  const rows = Math.max(8, Number(payload?.rows || 30))
+  try {
+    session.proc?.resize?.(cols, rows)
+    return { ok: true }
+  } catch {
+    return { ok: false, error: '调整终端尺寸失败' }
+  }
+})
+
+ipcMain.handle('local:disconnect', async (_event, payload) => {
+  const sessionId = String(payload?.sessionId || '').trim()
+  if (!sessionId) return { ok: true }
+  closeLocalShellSession(sessionId, 'manual')
   return { ok: true }
 })
 
@@ -1764,11 +2373,17 @@ ipcMain.handle('ssh:test', async (_event, config) => {
 ipcMain.handle('ssh:connect', async (_event, payload) => {
   const sessionId = payload.sessionId
   if (!sessionId) return { ok: false, error: '缺少 sessionId' }
+  const targetBase = `${String(payload?.username || '').trim() || 'user'}@${String(payload?.host || '').trim()}:${Number(payload?.port || 22)}`
+  const displayName = String(payload?.displayName || '').trim()
+  const target = displayName ? `${displayName} (${targetBase})` : targetBase
   const existing = sshSessions.get(sessionId)
   if (existing) {
+    existing.silentClose = true
     try { existing.stream.end('exit\n') } catch {}
     try { existing.conn.end() } catch {}
     sshSessions.delete(sessionId)
+    sshInputBuffers.delete(sessionId)
+    sshOutputBuffers.delete(sessionId)
   }
   const conn = await createSSHClient()
   attachKeyboardHandler(conn, payload.password)
@@ -1782,33 +2397,59 @@ ipcMain.handle('ssh:connect', async (_event, payload) => {
     conn.on('ready', () => {
       conn.shell({ term: 'xterm-256color', cols: 120, rows: 30 }, (err, stream) => {
         if (err) return finish({ ok: false, error: err.message })
-        sshSessions.set(sessionId, { conn, stream })
+        const sessionRef = { conn, stream, target, silentClose: false }
+        sshSessions.set(sessionId, sessionRef)
+        sshOutputBuffers.set(sessionId, '')
         stream.on('data', (chunk) => {
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+          const text = buffer.toString('utf8')
           broadcast('ssh:data', {
             sessionId,
-            data: buffer.toString('utf8'),
+            data: text,
             dataBase64: buffer.toString('base64'),
           })
+          logOutputLines(sshOutputBuffers, sessionId, text, 'ssh', target)
         })
         stream.on('close', () => {
-          broadcast('ssh:close', { sessionId })
           const active = sshSessions.get(sessionId)
-          if (active?.conn === conn) {
+          if (active === sessionRef) {
             sshSessions.delete(sessionId)
+            sshInputBuffers.delete(sessionId)
+            sshOutputBuffers.delete(sessionId)
+            flushResponseLogsForSession('ssh', sessionId)
           }
+          if (sessionRef.silentClose) {
+            conn.end()
+            return
+          }
+          broadcast('ssh:close', { sessionId })
+          appendAuditLog({ source: 'ssh', action: 'disconnect', target, content: '远程会话已关闭' })
           conn.end()
         })
+        const sshColorInit = buildShellColorInitScript()
+        setTimeout(() => {
+          try { stream.write(`${sshColorInit}\n`) } catch {}
+        }, 80)
+        appendAuditLog({ source: 'ssh', action: 'connect', target, content: '连接成功' })
         finish({ ok: true })
       })
-    }).on('error', (err) => { broadcast('ssh:error', { sessionId, error: err.message }); finish({ ok: false, error: err.message }) }).connect(connectConfigFromPayload(payload))
+    }).on('error', (err) => {
+      const message = err?.message || 'SSH 连接失败'
+      appendAuditLog({ source: 'ssh', action: 'error', target, content: message, level: 'error' })
+      broadcast('ssh:error', { sessionId, error: message })
+      finish({ ok: false, error: message })
+    }).connect(connectConfigFromPayload(payload))
   })
 })
 
 ipcMain.handle('ssh:write', async (_event, payload) => {
   const session = sshSessions.get(payload.sessionId)
   if (!session) return { ok: false, error: 'SSH 会话不存在' }
-  session.stream.write(payload.data)
+  const sessionId = String(payload.sessionId || '')
+  const data = String(payload.data || '')
+  session.stream.write(data)
+  const target = String(session?.target || `${session?.conn?.config?.username || 'user'}@${session?.conn?.config?.host || 'host'}:${Number(session?.conn?.config?.port || 22)}`)
+  logCommandLines(sshInputBuffers, sessionId, data, 'ssh', target)
   return { ok: true }
 })
 ipcMain.handle('ssh:resize', async (_event, payload) => {
@@ -1820,7 +2461,11 @@ ipcMain.handle('ssh:resize', async (_event, payload) => {
 ipcMain.handle('ssh:disconnect', async (_event, payload) => {
   const session = sshSessions.get(payload.sessionId)
   if (!session) return { ok: true }
-  session.stream.end('exit\n'); session.conn.end(); sshSessions.delete(payload.sessionId)
+  const target = String(session?.target || `${session?.conn?.config?.username || 'user'}@${session?.conn?.config?.host || 'host'}:${Number(session?.conn?.config?.port || 22)}`)
+  session.silentClose = true
+  session.stream.end('exit\n'); session.conn.end(); sshSessions.delete(payload.sessionId); sshInputBuffers.delete(payload.sessionId); sshOutputBuffers.delete(payload.sessionId)
+  flushResponseLogsForSession('ssh', payload.sessionId)
+  appendAuditLog({ source: 'ssh', action: 'disconnect', target, content: '用户手动断开' })
   return { ok: true }
 })
 
@@ -1851,17 +2496,30 @@ ipcMain.handle('localfs:list', async (_event, payload) => {
   }
   const localPath = requestedPath || os.homedir()
   try {
-    const items = fs.readdirSync(localPath, { withFileTypes: true }).map((d) => {
-      const fullPath = path.join(localPath, d.name)
-      let stat = null
-      try {
-        stat = fs.statSync(fullPath)
-      } catch {
-        stat = null
-      }
+    const entries = await fs.promises.readdir(localPath, { withFileTypes: true })
+    const STAT_THRESHOLD = 260
+    const shouldReadStats = entries.length <= STAT_THRESHOLD
+
+    let statsByName = new Map()
+    if (shouldReadStats) {
+      const stats = await Promise.all(entries.map(async (entry) => {
+        const fullPath = path.join(localPath, entry.name)
+        try {
+          const stat = await fs.promises.stat(fullPath)
+          return [entry.name, stat]
+        } catch {
+          return [entry.name, null]
+        }
+      }))
+      statsByName = new Map(stats)
+    }
+
+    const items = entries.map((entry) => {
+      const fullPath = path.join(localPath, entry.name)
+      const stat = shouldReadStats ? statsByName.get(entry.name) : null
       return {
-        name: d.name,
-        isDir: d.isDirectory(),
+        name: entry.name,
+        isDir: entry.isDirectory(),
         path: fullPath,
         size: stat?.size || 0,
         createdAt: stat?.birthtimeMs || stat?.ctimeMs || 0,

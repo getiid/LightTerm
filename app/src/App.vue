@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Server, FolderTree, Cable, KeyRound, Settings, Pencil, Eye, EyeOff } from 'lucide-vue-next'
 import '@xterm/xterm/css/xterm.css'
 
-type NavKey = 'hosts' | 'sftp' | 'snippets' | 'serial' | 'vault' | 'settings'
+type NavKey = 'hosts' | 'sftp' | 'snippets' | 'serial' | 'local' | 'vault' | 'settings' | 'logs'
 const nav = ref<NavKey>('hosts')
 const termEl = ref<HTMLElement | null>(null)
 
@@ -24,6 +24,8 @@ const sshStatus = ref('')
 const sshSessionId = ref('')
 const sshConnected = ref(false)
 const focusTerminal = ref(false)
+type TerminalMode = 'ssh' | 'serial' | 'local'
+const activeTerminalMode = ref<TerminalMode>('ssh')
 
 type LocalSSHConfig = { host: string; port?: number; username: string; password?: string; privateKey?: string }
 type SshTab = { id: string; name: string; connected: boolean }
@@ -542,16 +544,112 @@ const startupMasterConfirm = ref('')
 const startupTasksLoaded = ref(false)
 
 const serialPorts = ref<any[]>([])
+const serialBaudRates = [
+  50, 75, 110, 134, 150, 200, 300,
+  600, 1200, 1800, 2400, 4800, 9600,
+  19200, 38400, 57600, 115200, 230400,
+]
 const serialForm = ref<{ path: string; baudRate: number; dataBits: number; stopBits: number; parity: 'none' | 'even' | 'odd' }>({
-  path: '', baudRate: 115200, dataBits: 8, stopBits: 1, parity: 'none',
+  path: '', baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'none',
 })
+const serialBaudPreset = ref('9600')
 const serialSendText = ref('')
 const serialHexMode = ref(false)
 const serialTimerMs = ref(0)
+const serialFlowControl = ref<'none' | 'rtscts' | 'dsrdtr' | 'xonxoff'>('none')
+const serialAdvancedOpen = ref(false)
+const serialConnected = ref(false)
+const serialCurrentPath = ref('')
+type SerialDialogItem = {
+  id: string
+  ts: number
+  type: 'tx' | 'rx' | 'sys' | 'err'
+  text: string
+}
+const serialDialogLogs = ref<SerialDialogItem[]>([])
 let serialTimer: number | null = null
+
+const localSessionId = ref('')
+const localConnected = ref(false)
+const localCwd = ref('')
+const localStatus = ref('未连接')
+const localQuickCommands = [
+  { label: '系统信息', cmd: 'uname -a' },
+  { label: '磁盘占用', cmd: 'df -h' },
+  { label: '目录列表', cmd: 'ls -la' },
+  { label: '进程快照', cmd: 'ps aux | head -n 20' },
+]
+
+type AuditLogItem = {
+  id: string
+  ts: number
+  source: string
+  action: string
+  target: string
+  content: string
+  level?: string
+}
+const auditLogs = ref<AuditLogItem[]>([])
+const auditLoaded = ref(false)
+const auditStatus = ref('')
+const auditKeyword = ref('')
+const auditSource = ref('all')
+const selectedAuditTarget = ref('')
+
+const resolveAuditTarget = (item: AuditLogItem) => {
+  const rawTarget = String(item?.target || '').trim() || '未命名目标'
+  if (String(item?.source || '') !== 'ssh') return rawTarget
+  const match = rawTarget.match(/^(.+?)\s+\([^()]+\)$/)
+  return match?.[1]?.trim() || rawTarget
+}
+
+const auditTargetGroups = computed(() => {
+  const map = new Map<string, { target: string; count: number; lastTs: number; source: string }>()
+  auditLogs.value.forEach((item) => {
+    const target = resolveAuditTarget(item)
+    const prev = map.get(target)
+    const ts = Number(item?.ts || 0)
+    if (!prev) {
+      map.set(target, { target, count: 1, lastTs: ts, source: String(item?.source || 'app') })
+      return
+    }
+    prev.count += 1
+    if (ts > prev.lastTs) prev.lastTs = ts
+  })
+  return [...map.values()].sort((a, b) => b.lastTs - a.lastTs)
+})
+
+const currentAuditLogs = computed(() => {
+  const target = selectedAuditTarget.value
+  if (!target) return []
+  return auditLogs.value.filter((item) => resolveAuditTarget(item) === target)
+})
+
+const serialTimerActive = computed(() => !!serialTimer)
+const serialConnectionInfo = computed(() => {
+  if (!serialConnected.value || !serialCurrentPath.value) return '未连接'
+  return `${serialCurrentPath.value} · ${serialForm.value.baudRate} bps`
+})
+
+const pushSerialDialog = (type: SerialDialogItem['type'], rawText: string) => {
+  const text = String(rawText || '').replace(/\r/g, '')
+  if (!text.trim()) return
+  const lines = text.split('\n').map((line) => line.trimEnd()).filter((line) => line.trim().length > 0)
+  for (const line of lines) {
+    serialDialogLogs.value.unshift({
+      id: `serial-log-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      ts: Date.now(),
+      type,
+      text: line,
+    })
+  }
+  if (serialDialogLogs.value.length > 500) serialDialogLogs.value = serialDialogLogs.value.slice(0, 500)
+}
 
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
+const terminalFontStackTech = '"Maple Mono NF CN","Sarasa Mono SC","JetBrains Mono","Cascadia Mono","SF Mono","Menlo","PingFang SC","Microsoft YaHei UI",monospace'
+const terminalFontStackLight = '"Sarasa Mono SC","JetBrains Mono","Cascadia Mono","SF Mono","Menlo","PingFang SC","Microsoft YaHei UI",monospace'
 
 watch(focusTerminal, (value) => {
   if (value && !snippetsLoaded.value) void restoreSnippets()
@@ -562,11 +660,41 @@ watch(focusTerminal, (value) => {
   })
 })
 
+watch(activeTerminalMode, () => {
+  nextTick(() => {
+    initTerminal()
+    applyTerminalTheme()
+    fitAddon?.fit()
+    if (focusTerminal.value) terminal?.focus()
+  })
+})
+
 watch(snippetItems, (items) => {
   if (!items.some((item) => item.id === terminalSnippetId.value)) {
     terminalSnippetId.value = items[0]?.id || ''
   }
 }, { immediate: true })
+
+watch(auditTargetGroups, (groups) => {
+  if (groups.length === 0) {
+    selectedAuditTarget.value = ''
+    return
+  }
+  if (!groups.some((item) => item.target === selectedAuditTarget.value)) {
+    selectedAuditTarget.value = groups[0]?.target || ''
+  }
+}, { immediate: true })
+
+watch(() => serialForm.value.baudRate, (value) => {
+  const rate = Number(value || 0)
+  serialBaudPreset.value = serialBaudRates.includes(rate) ? String(rate) : 'custom'
+}, { immediate: true })
+
+watch(serialBaudPreset, (value) => {
+  if (value === 'custom') return
+  const rate = Number(value || 0)
+  if (Number.isFinite(rate) && rate > 0) serialForm.value.baudRate = rate
+})
 
 const normalizeTerminalEncoding = (value: unknown): TerminalEncoding => (
   value === 'gb18030' ? 'gb18030' : 'utf-8'
@@ -628,6 +756,24 @@ const decodeSshPayload = (msg: { sessionId?: string; data?: string; dataBase64?:
   }
 }
 
+const terminalModeLabel = computed(() => (
+  activeTerminalMode.value === 'ssh'
+    ? 'SSH 终端'
+    : activeTerminalMode.value === 'serial'
+      ? '串口会话'
+      : '本地终端'
+))
+
+const terminalTargetLabel = computed(() => {
+  if (activeTerminalMode.value === 'ssh') {
+    if (!sshSessionId.value) return '未连接'
+    const tab = sshTabs.value.find((item) => item.id === sshSessionId.value)
+    return tab?.name || sshSessionId.value
+  }
+  if (activeTerminalMode.value === 'serial') return serialCurrentPath.value || '未连接串口'
+  return localStatus.value || '未连接'
+})
+
 const saveSshTabs = () => {
   try {
     const snapshot = sshTabs.value.map((tab) => ({ id: tab.id, name: tab.name }))
@@ -668,6 +814,7 @@ const buildSessionId = () => `ssh-${Date.now().toString(36)}-${Math.random().toS
 const switchSshTab = (sessionId: string) => {
   const tab = sshTabs.value.find((item) => item.id === sessionId)
   if (!tab) return
+  activeTerminalMode.value = 'ssh'
   sshSessionId.value = tab.id
   sshConnected.value = !!tab.connected
   ensureSshBuffer(tab.id)
@@ -722,11 +869,86 @@ const closeSshTab = async (sessionId: string) => {
   renderActiveSshBuffer()
 }
 
+const decodePlainPayload = (msg: { data?: string; dataBase64?: string }) => {
+  const rawText = String(msg?.data || '')
+  const base64 = String(msg?.dataBase64 || '')
+  if (!base64) return rawText
+  const bytes = decodeBase64Bytes(base64)
+  if (!bytes) return rawText
+  try {
+    return new TextDecoder('utf-8').decode(bytes)
+  } catch {
+    return rawText
+  }
+}
+
+const applyTerminalTheme = () => {
+  if (!terminal) return
+  const techMode = activeTerminalMode.value !== 'ssh'
+  if (techMode) {
+    terminal.options.theme = {
+      background: '#07101d',
+      foreground: '#d9e7ff',
+      cursor: '#22d3ee',
+      selectionBackground: '#0ea5e980',
+      selectionInactiveBackground: '#1d4ed880',
+    }
+    terminal.options.fontFamily = terminalFontStackTech
+    terminal.options.fontSize = 14
+    terminal.options.fontWeight = 500
+    terminal.options.lineHeight = 1.24
+    return
+  }
+  terminal.options.theme = {
+    background: '#f8fafc',
+    foreground: '#111827',
+    cursor: '#2563eb',
+    selectionBackground: '#2563ebc0',
+    selectionInactiveBackground: '#60a5fa88',
+  }
+  terminal.options.fontFamily = terminalFontStackLight
+  terminal.options.fontSize = 13
+  terminal.options.fontWeight = 500
+  terminal.options.lineHeight = 1.2
+}
+
+const writeActiveTerminalInput = async (data: string) => {
+  if (!data) return
+  if (activeTerminalMode.value === 'ssh') {
+    if (!sshConnected.value) return
+    await window.lightterm.sshWrite({ sessionId: sshSessionId.value, data })
+    return
+  }
+  if (activeTerminalMode.value === 'serial') {
+    if (!serialConnected.value || !serialCurrentPath.value) return
+    await window.lightterm.sendSerial({ path: serialCurrentPath.value, data, isHex: false })
+    return
+  }
+  if (!localConnected.value || !localSessionId.value) return
+  const res = await window.lightterm.localWrite({ sessionId: localSessionId.value, data })
+  if (!res.ok) {
+    localStatus.value = `本地终端写入失败：${res.error || '未知错误'}`
+    terminal?.writeln(`\r\n[本地终端写入失败] ${res.error || '未知错误'}`)
+  }
+}
+
+const syncLocalTerminalSize = async () => {
+  if (!terminal || !localConnected.value || !localSessionId.value) return
+  await window.lightterm.localResize({
+    sessionId: localSessionId.value,
+    cols: terminal.cols,
+    rows: terminal.rows,
+  })
+}
+
 const initTerminal = () => {
   if (!termEl.value || terminal) return
   terminal = new Terminal({
     convertEol: true,
     fontSize: 13,
+    fontFamily: terminalFontStackLight,
+    fontWeight: 500,
+    lineHeight: 1.2,
     rightClickSelectsWord: true,
     theme: {
       background: '#f8fafc',
@@ -741,16 +963,19 @@ const initTerminal = () => {
   terminal.open(termEl.value)
   fitAddon.fit()
   terminal.focus()
+  applyTerminalTheme()
   termEl.value.addEventListener('click', () => terminal?.focus())
   // 启动提示改到状态栏，不占终端可视面积
 
-  terminal.onData((data) => sshConnected.value && window.lightterm.sshWrite({ sessionId: sshSessionId.value, data }))
+  terminal.onData((data) => {
+    void writeActiveTerminalInput(data)
+  })
   window.lightterm.onSshData((msg) => {
     const sessionId = String(msg?.sessionId || '')
     if (!sessionId) return
     const text = decodeSshPayload(msg)
     appendSshBuffer(sessionId, text)
-    if (sessionId === sshSessionId.value) terminal?.write(text)
+    if (sessionId === sshSessionId.value && activeTerminalMode.value === 'ssh') terminal?.write(text)
   })
   window.lightterm.onSshClose((msg) => {
     const tab = sshTabs.value.find((t) => t.id === msg.sessionId)
@@ -759,11 +984,43 @@ const initTerminal = () => {
     clearSessionDecoders(msg.sessionId)
     if (msg.sessionId === sshSessionId.value) {
       sshConnected.value = false
-      terminal?.writeln('\r\n[SSH 已断开]')
+      if (activeTerminalMode.value === 'ssh') terminal?.writeln('\r\n[SSH 已断开]')
     }
   })
-  window.lightterm.onSshError((msg) => msg.sessionId === sshSessionId.value && terminal?.writeln(`\r\n[SSH 错误] ${msg.error}`))
-  window.lightterm.onSerialData((msg) => terminal?.writeln(`\r\n[串口 ${msg.path}] ${msg.data}`))
+  window.lightterm.onSshError((msg) => {
+    if (msg.sessionId === sshSessionId.value && activeTerminalMode.value === 'ssh') {
+      terminal?.writeln(`\r\n[SSH 错误] ${msg.error}`)
+    }
+  })
+  window.lightterm.onSerialData((msg) => {
+    if (msg.path !== serialCurrentPath.value) return
+    pushSerialDialog('rx', String(msg.data || ''))
+    if (activeTerminalMode.value === 'serial') terminal?.write(String(msg.data || ''))
+  })
+  window.lightterm.onSerialError((msg) => {
+    if (msg.path !== serialCurrentPath.value) return
+    sshStatus.value = `串口异常：${msg.error || '未知错误'}`
+    pushSerialDialog('err', String(msg.error || '串口异常'))
+    if (activeTerminalMode.value === 'serial') terminal?.writeln(`\r\n[串口错误] ${msg.error || '未知错误'}`)
+  })
+  window.lightterm.onLocalData((msg) => {
+    const sessionId = String(msg?.sessionId || '')
+    if (!sessionId || sessionId !== localSessionId.value) return
+    if (activeTerminalMode.value !== 'local') return
+    terminal?.write(decodePlainPayload(msg))
+  })
+  window.lightterm.onLocalClose((msg) => {
+    if (String(msg?.sessionId || '') !== localSessionId.value) return
+    localConnected.value = false
+    localSessionId.value = ''
+    localStatus.value = `本地终端已断开（code=${Number(msg?.code || 0)}）`
+    if (activeTerminalMode.value === 'local') terminal?.writeln(`\r\n[本地终端已断开] code=${Number(msg?.code || 0)}`)
+  })
+  window.lightterm.onLocalError((msg) => {
+    if (String(msg?.sessionId || '') !== localSessionId.value) return
+    localStatus.value = `本地终端错误：${msg?.error || '未知错误'}`
+    if (activeTerminalMode.value === 'local') terminal?.writeln(`\r\n[本地终端错误] ${msg?.error || '未知错误'}`)
+  })
 }
 
 const restoreSshTabs = () => {
@@ -1130,7 +1387,71 @@ const runTerminalSnippet = async () => {
     snippetStatus.value = '没有可执行的代码片段'
     return
   }
-  await runSnippet(target)
+  if (activeTerminalMode.value === 'ssh') {
+    await runSnippet(target)
+    terminal?.focus()
+    return
+  }
+
+  if (activeTerminalMode.value === 'serial') {
+    if (!serialConnected.value || !serialCurrentPath.value) {
+      snippetStatus.value = '请先连接串口'
+      return
+    }
+    const lines = snippetCommandLines(target.commands || '')
+    if (lines.length === 0) {
+      snippetStatus.value = '没有可执行命令（空行和 # 注释会自动跳过）'
+      return
+    }
+    snippetRunning.value = true
+    snippetStopRequested.value = false
+    let sent = 0
+    const delayMs = Math.max(100, Number(snippetRunDelayMs.value || 0))
+    for (let i = 0; i < lines.length; i += 1) {
+      if (snippetStopRequested.value) break
+      const cmd = lines[i]
+      const res = await window.lightterm.sendSerial({ path: serialCurrentPath.value, data: `${cmd}\r\n`, isHex: false })
+      if (!res.ok) {
+        snippetStatus.value = `串口发送失败：${res.error || '未知错误'}`
+        break
+      }
+      sent += 1
+      if (i < lines.length - 1) await sleep(delayMs)
+    }
+    snippetRunning.value = false
+    snippetStopRequested.value = false
+    snippetStatus.value = sent === lines.length ? `串口发送完成：${target.name}` : `串口已发送 ${sent}/${lines.length}`
+    terminal?.focus()
+    return
+  }
+
+  if (!localConnected.value || !localSessionId.value) {
+    snippetStatus.value = '请先连接本地终端'
+    return
+  }
+  const commands = snippetCommandLines(target.commands || '')
+  if (commands.length === 0) {
+    snippetStatus.value = '没有可执行命令（空行和 # 注释会自动跳过）'
+    return
+  }
+  snippetRunning.value = true
+  snippetStopRequested.value = false
+  const delayMs = Math.max(120, Number(snippetRunDelayMs.value || 0))
+  let sent = 0
+  for (let i = 0; i < commands.length; i += 1) {
+    if (snippetStopRequested.value) break
+    const cmd = commands[i]
+    const res = await window.lightterm.localWrite({ sessionId: localSessionId.value, data: `${cmd}\n` })
+    if (!res.ok) {
+      snippetStatus.value = `本地执行失败：${res.error || '未知错误'}`
+      break
+    }
+    sent += 1
+    if (i < commands.length - 1) await sleep(delayMs)
+  }
+  snippetRunning.value = false
+  snippetStopRequested.value = false
+  snippetStatus.value = sent === commands.length ? `本地执行完成：${target.name}` : `本地已执行 ${sent}/${commands.length}`
   terminal?.focus()
 }
 
@@ -1140,14 +1461,26 @@ const sendSnippetRawToTerminal = async () => {
     snippetStatus.value = '没有可发送的代码片段'
     return
   }
-  const ready = await ensureSnippetSession(target)
-  if (!ready) return
   const payload = target.commands || ''
   if (!payload.trim()) {
     snippetStatus.value = '片段内容为空'
     return
   }
-  const res = await window.lightterm.sshWrite({ sessionId: sshSessionId.value, data: payload })
+  if (activeTerminalMode.value === 'ssh') {
+    const ready = await ensureSnippetSession(target)
+    if (!ready) return
+  } else if (activeTerminalMode.value === 'serial' && (!serialConnected.value || !serialCurrentPath.value)) {
+    snippetStatus.value = '请先连接串口'
+    return
+  } else if (activeTerminalMode.value === 'local' && (!localConnected.value || !localSessionId.value)) {
+    snippetStatus.value = '请先连接本地终端'
+    return
+  }
+  const res = activeTerminalMode.value === 'ssh'
+    ? await window.lightterm.sshWrite({ sessionId: sshSessionId.value, data: payload })
+    : activeTerminalMode.value === 'serial'
+      ? await window.lightterm.sendSerial({ path: serialCurrentPath.value, data: payload, isHex: false })
+      : await window.lightterm.localWrite({ sessionId: localSessionId.value, data: payload })
   snippetStatus.value = res.ok ? `片段原文已发送：${target.name}` : `片段发送失败：${res.error || '未知错误'}`
   terminal?.focus()
 }
@@ -1169,8 +1502,17 @@ const copyTerminalSelection = async () => {
 }
 
 const pasteToTerminal = async () => {
-  if (!sshConnected.value) {
-    sshStatus.value = '请先连接 SSH 会话'
+  const ready = activeTerminalMode.value === 'ssh'
+    ? sshConnected.value
+    : activeTerminalMode.value === 'serial'
+      ? serialConnected.value
+      : localConnected.value
+  if (!ready) {
+    sshStatus.value = activeTerminalMode.value === 'ssh'
+      ? '请先连接 SSH 会话'
+      : activeTerminalMode.value === 'serial'
+        ? '请先连接串口'
+        : '请先连接本地终端'
     return
   }
   const text = await readClipboardText()
@@ -1178,7 +1520,11 @@ const pasteToTerminal = async () => {
     sshStatus.value = '剪贴板为空'
     return
   }
-  const res = await window.lightterm.sshWrite({ sessionId: sshSessionId.value, data: text })
+  const res = activeTerminalMode.value === 'ssh'
+    ? await window.lightterm.sshWrite({ sessionId: sshSessionId.value, data: text })
+    : activeTerminalMode.value === 'serial'
+      ? await window.lightterm.sendSerial({ path: serialCurrentPath.value, data: text, isHex: false })
+      : await window.lightterm.localWrite({ sessionId: localSessionId.value, data: text })
   sshStatus.value = res.ok ? '已粘贴到终端' : `粘贴失败：${res.error || '未知错误'}`
   terminal?.focus()
 }
@@ -1243,6 +1589,7 @@ const connectSSH = async (optionsOrEvent?: { keepNav?: boolean } | Event) => {
     ...sshForm.value,
     password: authType.value === 'password' ? sshForm.value.password : undefined,
     privateKey: authType.value === 'key' ? privateKey : undefined,
+    displayName: sessionLabel,
     sessionId,
   })
   sshConnected.value = !!res.ok
@@ -1257,6 +1604,7 @@ const connectSSH = async (optionsOrEvent?: { keepNav?: boolean } | Event) => {
   saveSshTabs()
   sshStatus.value = res.ok ? 'SSH 交互会话已连接' : `SSH 连接失败：${res.error}`
   if (res.ok) {
+    activeTerminalMode.value = 'ssh'
     terminal?.writeln('\r\n[SSH 已连接，可直接输入命令]')
     focusTerminal.value = true
     if (!keepNav) nav.value = 'hosts'
@@ -2463,7 +2811,7 @@ const refreshStorageInfo = async () => {
       const kb = Math.max(0, Number(meta.size || 0)) / 1024
       const encrypted = meta.encrypted ? '已加密' : '未加密'
       const fileState = meta.exists ? '存在' : '不存在'
-      storageMetaText.value = `当前读取：${meta.dbPath || '-'} ｜ 文件：${fileState} ｜ 大小：${kb.toFixed(1)} KB ｜ 修改时间：${modified} ｜ 数据：主机 ${meta.hosts || 0} / 片段 ${meta.snippets || 0} / 密钥 ${meta.vaultKeys || 0} ｜ 加密：${encrypted} ｜ 格式：v${meta.storageVersion || 1}`
+      storageMetaText.value = `当前读取：${meta.dbPath || '-'} ｜ 文件：${fileState} ｜ 大小：${kb.toFixed(1)} KB ｜ 修改时间：${modified} ｜ 数据：主机 ${meta.hosts || 0} / 片段 ${meta.snippets || 0} / 密钥 ${meta.vaultKeys || 0} / 日志 ${meta.logs || 0} ｜ 加密：${encrypted} ｜ 格式：v${meta.storageVersion || 1}`
     }
   } catch (error) {
     startupGateError.value = `读取数据文件路径失败：${formatAppError(error)}`
@@ -2513,22 +2861,173 @@ const loadSerialPorts = async () => {
 }
 const openSerial = async () => {
   if (!serialForm.value.path) return
-  const res = await window.lightterm.openSerial(serialForm.value)
-  terminal?.writeln(res.ok ? `\r\n串口已打开：${serialForm.value.path}` : `\r\n串口打开失败：${res.error}`)
+  if (serialTimer) {
+    clearInterval(serialTimer)
+    serialTimer = null
+  }
+  const res = await window.lightterm.openSerial({
+    ...serialForm.value,
+    rtscts: serialFlowControl.value === 'rtscts',
+    dsrdtr: serialFlowControl.value === 'dsrdtr',
+    xon: serialFlowControl.value === 'xonxoff',
+    xoff: serialFlowControl.value === 'xonxoff',
+  })
+  if (!res.ok) {
+    sshStatus.value = `串口打开失败：${res.error || '未知错误'}`
+    pushSerialDialog('err', `连接失败：${res.error || '未知错误'}`)
+    terminal?.writeln(`\r\n串口打开失败：${res.error || '未知错误'}`)
+    return
+  }
+  serialConnected.value = true
+  serialCurrentPath.value = serialForm.value.path
+  activeTerminalMode.value = 'serial'
+  focusTerminal.value = false
+  await nextTick()
+  initTerminal()
+  applyTerminalTheme()
+  pushSerialDialog('sys', `连接成功：${serialCurrentPath.value}（${serialForm.value.baudRate} bps）`)
+  sshStatus.value = `串口已连接：${serialCurrentPath.value}`
 }
 const sendSerial = async () => {
-  if (!serialForm.value.path || !serialSendText.value) return
-  const res = await window.lightterm.sendSerial({ path: serialForm.value.path, data: serialSendText.value, isHex: serialHexMode.value })
-  terminal?.writeln(res.ok ? `\r\n已发送：${serialSendText.value}` : `\r\n发送失败：${res.error}`)
+  const pathValue = serialCurrentPath.value || serialForm.value.path
+  if (!pathValue || !serialSendText.value) return
+  const res = await window.lightterm.sendSerial({ path: pathValue, data: serialSendText.value, isHex: serialHexMode.value })
+  if (res.ok) {
+    pushSerialDialog('tx', serialSendText.value)
+    return
+  }
+  pushSerialDialog('err', `发送失败：${res.error || '未知错误'}`)
+  terminal?.writeln(`\r\n发送失败：${res.error}`)
+}
+const closeSerial = async () => {
+  const pathValue = serialCurrentPath.value || serialForm.value.path
+  if (!pathValue) return
+  if (serialTimer) {
+    clearInterval(serialTimer)
+    serialTimer = null
+  }
+  const res = await window.lightterm.closeSerial({ path: pathValue })
+  if (res.ok) {
+    serialConnected.value = false
+    serialCurrentPath.value = ''
+    sshStatus.value = `串口已断开：${pathValue}`
+    pushSerialDialog('sys', `串口已断开：${pathValue}`)
+    terminal?.writeln(`\r\n[串口已断开] ${pathValue}`)
+    if (activeTerminalMode.value === 'serial') focusTerminal.value = false
+    return
+  }
+  sshStatus.value = `串口断开失败：${res.error || '未知错误'}`
+  pushSerialDialog('err', `断开失败：${res.error || '未知错误'}`)
+}
+
+const createLocalSessionId = () => `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
+const connectLocalTerminal = async () => {
+  if (localSessionId.value) {
+    await window.lightterm.localDisconnect({ sessionId: localSessionId.value })
+  }
+  const sessionId = createLocalSessionId()
+  localSessionId.value = sessionId
+  const res = await window.lightterm.localConnect({
+    sessionId,
+    cwd: localCwd.value.trim() || undefined,
+    cols: 120,
+    rows: 30,
+  })
+  if (!res.ok) {
+    localConnected.value = false
+    localStatus.value = `连接失败：${res.error || '未知错误'}`
+    return
+  }
+  localConnected.value = true
+  activeTerminalMode.value = 'local'
+  focusTerminal.value = true
+  localStatus.value = `${res.shell || 'shell'} @ ${res.cwd || localCwd.value || '~'}`
+  localCwd.value = res.cwd || localCwd.value
+  await nextTick()
+  initTerminal()
+  applyTerminalTheme()
+  terminal?.reset()
+  terminal?.writeln(`[本地终端已连接] ${localStatus.value}`)
+  terminal?.focus()
+  await syncLocalTerminalSize()
+}
+
+const disconnectLocalTerminal = async () => {
+  if (!localSessionId.value) return
+  await window.lightterm.localDisconnect({ sessionId: localSessionId.value })
+  localConnected.value = false
+  localStatus.value = '已断开'
+  localSessionId.value = ''
+  if (activeTerminalMode.value === 'local') focusTerminal.value = false
+}
+
+const runLocalQuickCommand = async (cmd: string) => {
+  if (!localConnected.value || !localSessionId.value) {
+    localStatus.value = '请先连接本地终端'
+    return
+  }
+  const res = await window.lightterm.localWrite({ sessionId: localSessionId.value, data: `${cmd}\n` })
+  if (!res.ok) localStatus.value = `发送失败：${res.error || '未知错误'}`
+}
+
+const refreshAuditLogs = async () => {
+  const res = await window.lightterm.auditList({
+    limit: 1200,
+    source: auditSource.value,
+    keyword: auditKeyword.value.trim(),
+  })
+  if (!res.ok) {
+    auditStatus.value = `读取日志失败：${res.error || '未知错误'}`
+    return
+  }
+  auditLogs.value = (res.items || []) as AuditLogItem[]
+  auditLoaded.value = true
+  auditStatus.value = `共 ${auditLogs.value.length} 条日志`
+}
+
+const clearAuditLogs = async () => {
+  const confirmed = window.confirm('确认清空全部日志吗？')
+  if (!confirmed) return
+  const res = await window.lightterm.auditClear()
+  if (!res.ok) {
+    auditStatus.value = `清空失败：${res.error || '未知错误'}`
+    return
+  }
+  auditLogs.value = []
+  auditStatus.value = '日志已清空'
+}
+
+const formatAuditTime = (ts: number) => {
+  if (!ts) return '-'
+  return new Date(ts).toLocaleString()
+}
+
+const formatAuditSource = (source: string) => {
+  if (source === 'ssh') return 'SSH'
+  if (source === 'serial') return '串口'
+  if (source === 'local') return '本地'
+  return '系统'
+}
+
+const formatAuditAction = (action: string) => {
+  if (action === 'connect') return '连接成功'
+  if (action === 'disconnect') return '会话结束'
+  if (action === 'command') return '输入命令'
+  if (action === 'response') return '终端反馈'
+  if (action === 'error') return '异常'
+  return action || '事件'
 }
 const toggleTimerSend = () => {
   if (serialTimer) {
     clearInterval(serialTimer)
     serialTimer = null
+    pushSerialDialog('sys', '已停止定时发送')
     return
   }
   if (!serialTimerMs.value || serialTimerMs.value < 50) return
   serialTimer = window.setInterval(() => sendSerial(), serialTimerMs.value)
+  pushSerialDialog('sys', `已开启定时发送：${serialTimerMs.value} ms`)
 }
 
 watch(nav, async (value) => {
@@ -2555,6 +3054,10 @@ watch(nav, async (value) => {
     return
   }
 
+  if (value === 'local') {
+    return
+  }
+
   if (value === 'vault') {
     if (vaultUnlocked.value && !vaultKeysLoaded.value) await refreshVaultKeys()
     return
@@ -2562,6 +3065,11 @@ watch(nav, async (value) => {
 
   if (value === 'settings' && !updateStateLoaded.value) {
     await refreshUpdateState()
+    return
+  }
+
+  if (value === 'logs') {
+    await refreshAuditLogs()
   }
 })
 
@@ -2587,7 +3095,11 @@ onMounted(async () => {
 
   window.addEventListener('resize', () => {
     fitAddon?.fit()
-    if (sshConnected.value && terminal) window.lightterm.sshResize({ sessionId: sshSessionId.value, cols: terminal.cols, rows: terminal.rows })
+    if (activeTerminalMode.value === 'ssh' && sshConnected.value && terminal) {
+      window.lightterm.sshResize({ sessionId: sshSessionId.value, cols: terminal.cols, rows: terminal.rows })
+    } else if (activeTerminalMode.value === 'local') {
+      void syncLocalTerminalSize()
+    }
   })
   window.lightterm.onSftpProgress((p) => {
     if (p.type === 'upload') sftpUploadProgress.value = p.percent
@@ -2595,6 +3107,12 @@ onMounted(async () => {
   })
   window.lightterm.onUpdateStatus((payload) => mergeUpdateState(payload))
   window.lightterm.onStorageDataChanged(() => scheduleStorageDataRefresh())
+  window.lightterm.onAuditAppended((item) => {
+    auditLogs.value = [item as AuditLogItem, ...auditLogs.value]
+    if (auditLogs.value.length > 1200) auditLogs.value = auditLogs.value.slice(0, 1200)
+    auditStatus.value = `共 ${auditLogs.value.length} 条日志`
+    if (!auditLoaded.value) auditLoaded.value = true
+  })
   window.addEventListener('click', hideAllMenus)
   window.addEventListener('keydown', handleTerminalHotkeys, true)
 })
@@ -2605,6 +3123,16 @@ onBeforeUnmount(() => {
     window.clearTimeout(storageDataRefreshTimer)
     storageDataRefreshTimer = null
   }
+  if (serialTimer) {
+    clearInterval(serialTimer)
+    serialTimer = null
+  }
+  if (serialConnected.value && serialCurrentPath.value) {
+    void window.lightterm.closeSerial({ path: serialCurrentPath.value })
+  }
+  if (localSessionId.value) {
+    void window.lightterm.localDisconnect({ sessionId: localSessionId.value })
+  }
   window.removeEventListener('keydown', handleTerminalHotkeys, true)
   window.removeEventListener('click', hideAllMenus)
 })
@@ -2613,17 +3141,19 @@ onBeforeUnmount(() => {
 <template>
   <div class="layout" :class="{ 'terminal-layout': focusTerminal }">
     <aside class="sidebar">
-      <div class="brand"><img src="/logo-astrashell.svg?v=8" alt="AstraShell" class="brand-logo" /> AstraShell</div>
+      <div class="brand"><img src="/logo-astrashell.svg?v=10" alt="AstraShell" class="brand-logo" /> AstraShell</div>
       <ul class="sidebar-nav">
         <li :class="{ active: nav === 'hosts' }" @click="focusTerminal = false; nav = 'hosts'"><Server :size="16" /> 主机管理</li>
         <li :class="{ active: nav === 'sftp' }" @click="focusTerminal = false; nav = 'sftp'"><FolderTree :size="16" /> 文件传输</li>
         <li :class="{ active: nav === 'snippets' }" @click="focusTerminal = false; nav = 'snippets'"><Pencil :size="16" /> 代码片段</li>
         <li :class="{ active: nav === 'serial' }" @click="focusTerminal = false; nav = 'serial'"><Cable :size="16" /> 串口工具</li>
+        <li :class="{ active: nav === 'local' }" @click="focusTerminal = false; nav = 'local'"><Server :size="16" /> 本地终端</li>
         <li :class="{ active: nav === 'vault' }" @click="focusTerminal = false; nav = 'vault'"><KeyRound :size="16" /> 密钥管理</li>
         <li :class="{ active: nav === 'settings' }" @click="focusTerminal = false; nav = 'settings'"><Settings :size="16" /> 应用设置</li>
+        <li :class="{ active: nav === 'logs' }" @click="focusTerminal = false; nav = 'logs'"><Pencil :size="16" /> 操作日志</li>
       </ul>
       <div class="sidebar-footer">
-        <img src="/logo-astrashell.svg?v=8" alt="AstraShell Logo" class="sidebar-footer-logo" />
+        <img src="/logo-astrashell.svg?v=10" alt="AstraShell Logo" class="sidebar-footer-logo" />
         <div class="sidebar-footer-text">
           <div class="sidebar-footer-title">AstraShell</div>
           <div class="sidebar-footer-sub">制作人：GetIDC</div>
@@ -2633,7 +3163,11 @@ onBeforeUnmount(() => {
 
     <main class="main">
       <div class="top-actions terminal-top-actions" v-if="focusTerminal">
-        <div class="terminal-tabs">
+        <div class="terminal-mode-line">
+          <span class="status-pill mode">{{ terminalModeLabel }}</span>
+          <span class="status-pill plain">{{ terminalTargetLabel }}</span>
+        </div>
+        <div v-if="activeTerminalMode === 'ssh'" class="terminal-tabs">
           <div
             class="terminal-tab"
             v-for="tab in sshTabs"
@@ -2647,12 +3181,13 @@ onBeforeUnmount(() => {
           </div>
           <button class="ghost small" @click="createSshTab()">+ 新标签</button>
         </div>
-        <div class="terminal-actions-row">
+        <div class="terminal-actions-row" v-if="activeTerminalMode !== 'serial'">
           <div class="terminal-tools-left">
             <button class="ghost" @click="focusTerminal = false">返回模块视图</button>
             <button class="ghost" @click="selectAllTerminal">全选</button>
             <button class="ghost" @click="copyTerminalSelection">复制选中</button>
             <button class="ghost" @click="pasteToTerminal">粘贴</button>
+            <button v-if="activeTerminalMode === 'local'" class="danger" @click="disconnectLocalTerminal">断开本地</button>
           </div>
           <div class="terminal-tools-right">
             <select v-model="terminalEncoding" class="encoding-select" title="终端解码">
@@ -2670,9 +3205,26 @@ onBeforeUnmount(() => {
             <button class="ghost" @click="nav = 'snippets'; focusTerminal = false">打开片段</button>
           </div>
         </div>
+        <div class="serial-live-toolbar" v-else>
+          <div class="terminal-tools-left">
+            <button class="ghost" @click="focusTerminal = false">返回串口面板</button>
+            <button class="ghost" @click="copyTerminalSelection">复制选中</button>
+            <button class="ghost" @click="pasteToTerminal">粘贴</button>
+            <button class="danger" @click="closeSerial">断开串口</button>
+          </div>
+          <div class="terminal-tools-right">
+            <select v-model="terminalSnippetId">
+              <option value="">选择代码片段</option>
+              <option v-for="item in terminalSnippetItems" :key="item.id" :value="item.id">
+                {{ item.name }} · {{ item.category }}
+              </option>
+            </select>
+            <button class="muted" @click="runTerminalSnippet" :disabled="snippetRunning">执行片段</button>
+          </div>
+        </div>
       </div>
 
-      <div class="session-strip" v-else-if="sshTabs.length > 0">
+      <div class="session-strip" v-else-if="sshTabs.length > 0 && activeTerminalMode === 'ssh'">
         <div class="session-strip-title">活动 SSH 会话</div>
         <div class="terminal-tabs session-strip-tabs">
           <div
@@ -3065,20 +3617,136 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section v-else-if="!focusTerminal && nav === 'serial'" class="panel">
-        <h3>串口工具</h3>
-        <div class="grid">
-          <select v-model="serialForm.path"><option value="">选择串口</option><option v-for="p in serialPorts" :key="p.path" :value="p.path">{{ p.path }}</option></select>
-          <input v-model.number="serialForm.baudRate" type="number" placeholder="波特率" />
-          <button @click="loadSerialPorts">刷新串口</button>
-          <button @click="openSerial">打开串口</button>
+      <section v-else-if="!focusTerminal && nav === 'serial'" class="panel serial-panel">
+        <div class="serial-connect-shell">
+          <div class="serial-connect-card">
+            <div class="serial-title">
+              <span class="serial-title-icon">⌨</span>
+              <h3>串口连接</h3>
+            </div>
+            <div class="serial-route-line">
+              <span>端口</span>
+              <i></i>
+              <span>会话</span>
+            </div>
+            <div class="serial-form-stack">
+              <label class="serial-field-label">端口选择</label>
+              <select v-model="serialForm.path">
+                <option value="">请选择串口端口</option>
+                <option v-for="p in serialPorts" :key="p.path" :value="p.path">{{ p.path }}</option>
+              </select>
+              <label class="serial-field-label">波特率选择</label>
+              <div class="serial-baud-row">
+                <select v-model="serialBaudPreset">
+                  <option v-for="rate in serialBaudRates" :key="`baud-preset-${rate}`" :value="String(rate)">{{ rate }} bps</option>
+                  <option value="custom">自定义输入</option>
+                </select>
+                <input v-model.number="serialForm.baudRate" type="number" min="1" step="1" placeholder="手动输入波特率" />
+              </div>
+              <button class="serial-advanced-toggle ghost" @click="serialAdvancedOpen = !serialAdvancedOpen">
+                高级参数 {{ serialAdvancedOpen ? '▾' : '▸' }}
+              </button>
+              <div v-if="serialAdvancedOpen" class="serial-advanced-panel">
+                <label>字符编码</label>
+                <select v-model="terminalEncoding">
+                  <option value="utf-8">UTF-8（推荐）</option>
+                  <option value="gb18030">GB18030（中文设备）</option>
+                </select>
+
+                <label>数据位</label>
+                <div class="serial-segment">
+                  <button class="seg-btn" :class="{ active: serialForm.dataBits === 8 }" @click="serialForm.dataBits = 8">8</button>
+                  <button class="seg-btn" :class="{ active: serialForm.dataBits === 7 }" @click="serialForm.dataBits = 7">7</button>
+                  <button class="seg-btn" :class="{ active: serialForm.dataBits === 6 }" @click="serialForm.dataBits = 6">6</button>
+                  <button class="seg-btn" :class="{ active: serialForm.dataBits === 5 }" @click="serialForm.dataBits = 5">5</button>
+                </div>
+
+                <label>停止位</label>
+                <div class="serial-segment">
+                  <button class="seg-btn" :class="{ active: serialForm.stopBits === 1 }" @click="serialForm.stopBits = 1">1</button>
+                  <button class="seg-btn" :class="{ active: serialForm.stopBits === 2 }" @click="serialForm.stopBits = 2">2</button>
+                </div>
+
+                <label>流控</label>
+                <div class="serial-segment flow">
+                  <button class="seg-btn" :class="{ active: serialFlowControl === 'none' }" @click="serialFlowControl = 'none'">无</button>
+                  <button class="seg-btn" :class="{ active: serialFlowControl === 'rtscts' }" @click="serialFlowControl = 'rtscts'">RTS/CTS</button>
+                  <button class="seg-btn" :class="{ active: serialFlowControl === 'dsrdtr' }" @click="serialFlowControl = 'dsrdtr'">DSR/DTR</button>
+                  <button class="seg-btn" :class="{ active: serialFlowControl === 'xonxoff' }" @click="serialFlowControl = 'xonxoff'">XON/XOFF</button>
+                </div>
+
+                <label>校验位</label>
+                <div class="serial-segment">
+                  <button class="seg-btn" :class="{ active: serialForm.parity === 'none' }" @click="serialForm.parity = 'none'">无</button>
+                  <button class="seg-btn" :class="{ active: serialForm.parity === 'odd' }" @click="serialForm.parity = 'odd'">奇校验</button>
+                  <button class="seg-btn" :class="{ active: serialForm.parity === 'even' }" @click="serialForm.parity = 'even'">偶校验</button>
+                </div>
+              </div>
+              <label class="serial-field-label">发送内容</label>
+              <input v-model="serialSendText" :placeholder="serialHexMode ? 'HEX 示例：41 54 0D 0A' : '输入要发送的内容'" />
+              <div class="serial-send-toolbar">
+                <label class="serial-inline-check"><input v-model="serialHexMode" type="checkbox" /> HEX 模式</label>
+                <input v-model.number="serialTimerMs" type="number" min="50" step="10" placeholder="定时发送 ms（>=50）" />
+              </div>
+              <div class="serial-send-actions">
+                <button @click="sendSerial" :disabled="!serialConnected">发送</button>
+                <button class="muted" @click="toggleTimerSend" :disabled="!serialConnected || !serialTimerMs || serialTimerMs < 50">
+                  {{ serialTimerActive ? '停止定时' : '开启定时' }}
+                </button>
+              </div>
+            </div>
+            <div class="serial-connect-actions">
+              <button class="muted" @click="loadSerialPorts">刷新端口</button>
+              <button v-if="!serialConnected" class="serial-connect-btn" @click="openSerial">连接串口</button>
+              <button v-else class="danger" @click="closeSerial">断开串口</button>
+            </div>
+          </div>
+          <div class="serial-dialog-panel">
+            <div class="serial-dialog-info">
+              <div class="serial-dialog-info-title">连接信息</div>
+              <div class="serial-dialog-info-main">{{ serialConnected ? '已连接' : '未连接' }}</div>
+              <div class="serial-dialog-info-sub">{{ serialConnectionInfo }}</div>
+            </div>
+            <div class="serial-dialog-list">
+              <article v-for="item in serialDialogLogs" :key="item.id" class="serial-dialog-item" :class="`type-${item.type}`">
+                <header>
+                  <span>{{ item.type === 'tx' ? '发送' : item.type === 'rx' ? '接收' : item.type === 'err' ? '错误' : '状态' }}</span>
+                  <small>{{ formatAuditTime(item.ts) }}</small>
+                </header>
+                <pre>{{ item.text }}</pre>
+              </article>
+              <div v-if="serialDialogLogs.length === 0" class="file-row empty">连接后这里将显示串口交互内容</div>
+            </div>
+          </div>
         </div>
-        <div class="send-box">
-          <input v-model="serialSendText" :placeholder="serialHexMode ? 'HEX 示例：41 54 0D 0A' : '发送内容（ASCII）'" />
-          <label><input v-model="serialHexMode" type="checkbox" /> HEX</label>
-          <input v-model.number="serialTimerMs" type="number" placeholder="定时发送ms（>=50）" />
-          <button @click="sendSerial">发送</button>
-          <button class="muted" @click="toggleTimerSend">切换定时</button>
+      </section>
+
+      <section v-else-if="!focusTerminal && nav === 'local'" class="panel local-panel">
+        <div class="serial-head">
+          <div>
+            <h3>本地终端</h3>
+            <p class="hosts-header-sub">科技风终端皮肤，支持中文显示、快捷工具、代码片段复用</p>
+          </div>
+          <div class="serial-head-actions">
+            <button class="ghost" @click="connectLocalTerminal">连接本地终端</button>
+            <button class="muted" :disabled="!localConnected" @click="disconnectLocalTerminal">断开</button>
+          </div>
+        </div>
+        <div class="local-status">{{ localStatus }}</div>
+        <div class="grid local-connect-grid">
+          <input v-model="localCwd" placeholder="启动目录（留空使用当前用户目录）" />
+          <button @click="connectLocalTerminal">打开并进入终端</button>
+        </div>
+        <div class="local-tools-card">
+          <div class="hosts-left-title">
+            <span>快捷工具</span>
+            <span class="hosts-stat">连接后点击即执行</span>
+          </div>
+          <div class="local-tool-grid">
+            <button v-for="item in localQuickCommands" :key="item.cmd" class="ghost" @click="runLocalQuickCommand(item.cmd)">
+              {{ item.label }}
+            </button>
+          </div>
         </div>
       </section>
 
@@ -3205,10 +3873,90 @@ onBeforeUnmount(() => {
         <p class="hint">不再使用“手动同步队列”：所有改动都直接写入数据文件。</p>
       </section>
 
+      <section v-else-if="!focusTerminal && nav === 'logs'" class="panel logs-panel">
+        <div class="serial-head">
+          <div>
+            <h3>操作日志</h3>
+            <p class="hosts-header-sub">按服务器/目标分组，点开查看该目标完整历史操作</p>
+          </div>
+          <div class="serial-head-actions">
+            <button class="ghost" @click="refreshAuditLogs">刷新</button>
+            <button class="danger" @click="clearAuditLogs">清空日志</button>
+          </div>
+        </div>
+        <div class="grid logs-filter-grid">
+          <select v-model="auditSource">
+            <option value="all">全部来源</option>
+            <option value="ssh">SSH</option>
+            <option value="serial">串口</option>
+            <option value="local">本地终端</option>
+            <option value="app">系统</option>
+          </select>
+          <input v-model="auditKeyword" placeholder="搜索目标 / 命令 / 错误信息" />
+          <button class="muted" @click="refreshAuditLogs">按条件过滤</button>
+          <span class="hosts-stat">{{ auditStatus || '未加载' }}</span>
+        </div>
+        <div class="logs-split">
+          <aside class="logs-target-list">
+            <button
+              v-for="group in auditTargetGroups"
+              :key="`target-${group.target}`"
+              class="logs-target-item"
+              :class="{ active: selectedAuditTarget === group.target }"
+              @click="selectedAuditTarget = group.target"
+            >
+              <div class="logs-target-name">{{ group.target }}</div>
+              <div class="logs-target-meta">
+                <span>{{ formatAuditSource(group.source) }}</span>
+                <span>{{ group.count }} 条</span>
+              </div>
+              <div class="logs-target-time">{{ formatAuditTime(group.lastTs) }}</div>
+            </button>
+            <div v-if="auditTargetGroups.length === 0" class="file-row empty">暂无目标</div>
+          </aside>
+          <div class="logs-list">
+            <article v-for="item in currentAuditLogs" :key="item.id" class="log-item">
+              <header>
+                <span class="log-time">{{ formatAuditTime(item.ts) }}</span>
+                <span class="pill">{{ formatAuditSource(item.source) }}</span>
+                <span class="pill ghost">{{ formatAuditAction(item.action) }}</span>
+              </header>
+              <div class="log-target">{{ item.target || '未命名目标' }}</div>
+              <pre>{{ item.content || '-' }}</pre>
+            </article>
+            <div v-if="currentAuditLogs.length === 0" class="file-row empty">请选择左侧目标查看详情</div>
+          </div>
+        </div>
+      </section>
+
       <section v-else-if="!focusTerminal" class="panel"><h3>模块建设中</h3><p>当前页面：{{ nav }}</p></section>
 
-      <section v-show="focusTerminal" class="terminal-wrap" :class="{ focus: focusTerminal }">
-        <div ref="termEl" class="terminal" @contextmenu.prevent="openTerminalContextMenu"></div>
+      <section v-show="focusTerminal" class="terminal-wrap" :class="{ focus: focusTerminal, 'serial-live-shell': activeTerminalMode === 'serial' }">
+        <div class="terminal-core">
+          <div ref="termEl" class="terminal" @contextmenu.prevent="openTerminalContextMenu"></div>
+        </div>
+        <aside v-if="activeTerminalMode === 'serial'" class="serial-snippet-rail">
+          <div class="serial-rail-head">
+            <button class="ghost small" @click="nav = 'snippets'; focusTerminal = false">打开片段库</button>
+          </div>
+          <div class="serial-rail-search">
+            <input v-model="snippetKeyword" placeholder="搜索片段" />
+          </div>
+          <div class="serial-rail-list">
+            <article
+              v-for="item in terminalSnippetItems.slice(0, 16)"
+              :key="`serial-rail-${item.id}`"
+              class="serial-rail-item"
+              @click="terminalSnippetId = item.id"
+            >
+              <header>
+                <span>{{ item.name }}</span>
+                <small>{{ snippetCommandLines(item.commands).length }} 条</small>
+              </header>
+              <pre>{{ snippetCommandLines(item.commands).slice(0, 2).join(' ; ') }}</pre>
+            </article>
+          </div>
+        </aside>
       </section>
 
       <div
@@ -3224,7 +3972,7 @@ onBeforeUnmount(() => {
     </main>
 
     <footer class="status-bar fixed-bottom">
-      <div class="status-left">状态：{{ snippetStatus || sftpStatus || sshStatus || '就绪' }}</div>
+      <div class="status-left">状态：{{ snippetStatus || sftpStatus || sshStatus || localStatus || auditStatus || '就绪' }}</div>
       <div class="status-right">
         <span>↑ {{ sftpUploadProgress }}%</span>
         <div class="mini-bar"><div class="mini-fill" :style="{ width: `${sftpUploadProgress}%` }"></div></div>
@@ -3298,6 +4046,7 @@ onBeforeUnmount(() => {
 .main { padding: 12px; padding-bottom: 42px; display: flex; flex-direction: column; gap: 10px; height: 100vh; overflow: hidden; }
 .top-actions { flex-shrink: 0; }
 .terminal-top-actions { display: flex; flex-direction: column; gap: 8px; background: #f5f8fc; border: 1px solid #dbe3ee; border-radius: 12px; padding: 8px 10px; }
+.terminal-mode-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .terminal-actions-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .terminal-tabs { display: flex; align-items: center; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
 .session-strip { display: flex; align-items: center; gap: 10px; background: #f5f8fc; border: 1px solid #dbe3ee; border-radius: 12px; padding: 8px 10px; }
@@ -3337,12 +4086,97 @@ button.tiny { padding: 4px 10px; font-size: 11px; }
 .tab.activeTab { background: #2563eb; color: #fff; }
 .tab .x { margin-left: 6px; font-weight: 700; }
 .send-box { display: grid; grid-template-columns: 1fr auto 180px 120px 120px; gap: 10px; margin-top: 10px; align-items: center; }
-.terminal-wrap { flex: 1; min-height: 220px; overflow: hidden; }
+.serial-panel,
+.local-panel,
+.logs-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+.serial-connect-shell { flex: 1; min-height: 0; display: grid; grid-template-columns: 420px minmax(0, 1fr); gap: 14px; align-items: start; }
+.serial-connect-card { width: 100%; border: 1px solid #cdd6e2; border-radius: 14px; padding: 14px; background: linear-gradient(180deg, #f8fbff 0%, #eef3f9 100%); display: grid; gap: 10px; box-shadow: inset 0 1px 0 rgba(255,255,255,.7); }
+.serial-title { display: flex; align-items: center; gap: 10px; }
+.serial-title h3 { margin: 0; font-size: 24px; letter-spacing: 0.02em; color: #1f2937; }
+.serial-title-icon { width: 34px; height: 34px; border-radius: 10px; background: #1e293b; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 16px; }
+.serial-route-line { display: flex; align-items: center; gap: 8px; color: #2563eb; font-size: 14px; }
+.serial-route-line i { flex: 1; height: 4px; border-radius: 999px; background: linear-gradient(90deg, #3b82f6, #0f172a); display: block; }
+.serial-form-stack { display: grid; gap: 8px; }
+.serial-field-label { font-size: 12px; color: #2563eb; font-weight: 700; letter-spacing: 0.02em; }
+.serial-form-stack > select,
+.serial-form-stack > input { width: 100%; background: #fff; }
+.serial-baud-row { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 8px; }
+.serial-baud-row > select,
+.serial-baud-row > input { width: 100%; min-width: 0; background: #fff; }
+.serial-advanced-toggle { justify-content: space-between; width: 100%; }
+.serial-advanced-panel { border: 1px solid #d8e0ea; border-radius: 10px; background: #f4f7fb; padding: 10px; display: grid; gap: 8px; }
+.serial-advanced-panel label { font-size: 12px; color: #3b82f6; font-weight: 600; }
+.serial-segment { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.serial-segment.flow { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.seg-btn { background: #e5ebf2; color: #334155; border: 1px solid #d1dae6; border-radius: 8px; font-size: 12px; padding: 6px 4px; }
+.seg-btn.active { background: #2f80ed; color: #fff; border-color: #2f80ed; }
+.serial-send-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 8px; align-items: center; }
+.serial-inline-check { display: inline-flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #d1dae6; border-radius: 8px; background: #f8fbff; color: #334155; font-size: 12px; }
+.serial-inline-check input { width: 14px; height: 14px; margin: 0; }
+.serial-send-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.serial-send-actions button { width: 100%; }
+.serial-connect-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.serial-connect-btn { min-width: 120px; background: #2563eb; }
+.serial-dialog-panel { border: 1px solid #cbd7e6; border-radius: 14px; background: linear-gradient(180deg, #f8fbff 0%, #edf3fb 100%); padding: 12px; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 10px; }
+.serial-dialog-info { border: 1px solid #d3deeb; border-radius: 12px; background: #ffffff; padding: 10px 12px; display: grid; gap: 4px; }
+.serial-dialog-info-title { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+.serial-dialog-info-main { font-size: 18px; line-height: 1.2; color: #0f172a; font-weight: 800; }
+.serial-dialog-info-sub { font-size: 12px; color: #334155; }
+.serial-dialog-list { min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.serial-dialog-item { border: 1px solid #d6e0eb; border-radius: 10px; background: #fff; padding: 8px 10px; display: grid; gap: 6px; box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04); }
+.serial-dialog-item header { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: #475569; font-size: 12px; font-weight: 600; }
+.serial-dialog-item header small { color: #94a3b8; font-weight: 500; }
+.serial-dialog-item pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; color: #0f172a; font-family: ui-monospace, Menlo, Monaco, Consolas, "PingFang SC", "Microsoft YaHei", monospace; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px; }
+.serial-dialog-item.type-tx { border-left: 4px solid #2563eb; }
+.serial-dialog-item.type-rx { border-left: 4px solid #16a34a; }
+.serial-dialog-item.type-sys { border-left: 4px solid #0f172a; }
+.serial-dialog-item.type-err { border-left: 4px solid #dc2626; background: #fff7f7; }
+.serial-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.serial-head h3 { margin: 0; }
+.serial-head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.serial-config-card,
+.local-tools-card { border: 1px solid #c9d6e5; border-radius: 14px; background: linear-gradient(180deg, #eef5ff 0%, #e6eef8 100%); padding: 12px; display: grid; gap: 10px; }
+.serial-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 0; }
+.baud-input-wrap { min-width: 0; }
+.baud-input-wrap input { width: 100%; }
+.local-status { padding: 8px 10px; border-radius: 10px; border: 1px solid #cbd5e1; background: #f8fafc; color: #334155; font-size: 12px; }
+.local-connect-grid { grid-template-columns: 1fr auto; margin-top: 0; }
+.local-tool-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.logs-filter-grid { grid-template-columns: 180px 1fr auto auto; margin-top: 0; align-items: center; }
+.logs-split { flex: 1; min-height: 0; display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 10px; overflow: hidden; }
+.logs-target-list { border: 1px solid #d1dae5; border-radius: 12px; background: #f8fbff; padding: 10px; overflow: auto; min-height: 0; display: grid; gap: 8px; align-content: start; }
+.logs-target-item { text-align: left; border: 1px solid #d7dfeb; border-radius: 10px; background: #fff; color: #0f172a; display: grid; gap: 4px; }
+.logs-target-item.active { border-color: #3b82f6; box-shadow: inset 0 0 0 1px #3b82f6; background: #eff6ff; }
+.logs-target-name { font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.logs-target-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: #64748b; }
+.logs-target-time { font-size: 11px; color: #94a3b8; }
+.logs-list { border: 1px solid #d1dae5; border-radius: 12px; background: #f8fbff; padding: 10px; overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.log-item { border: 1px solid #d7dfeb; border-radius: 10px; background: #fff; padding: 8px; display: grid; gap: 6px; }
+.log-item header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.log-time { font-size: 12px; color: #334155; font-weight: 600; }
+.log-target { font-size: 12px; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.log-item pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; color: #0f172a; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px; max-height: 140px; overflow: auto; font-family: ui-monospace, Menlo, Monaco, Consolas, "PingFang SC", "Microsoft YaHei", monospace; }
+.terminal-wrap { flex: 1; min-height: 220px; overflow: hidden; display: grid; grid-template-columns: 1fr; }
 .terminal-wrap.focus { flex: 1; min-height: 0; }
+.terminal-core { min-height: 0; height: 100%; }
 .terminal { height: 100%; }
 .terminal-wrap.focus .terminal { height: 100%; }
+.serial-live-shell { grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; }
+.serial-snippet-rail { border: 1px solid #d1dae5; border-radius: 12px; background: #f3f6fb; padding: 10px; display: grid; grid-template-rows: auto auto 1fr; gap: 8px; min-height: 0; }
+.serial-rail-head { display: flex; justify-content: flex-end; }
+.serial-rail-search input { width: 100%; }
+.serial-rail-list { overflow: auto; min-height: 0; display: grid; gap: 8px; align-content: start; }
+.serial-rail-item { border: 1px solid #d7dfeb; border-radius: 10px; background: #fff; padding: 8px; display: grid; gap: 6px; cursor: pointer; }
+.serial-rail-item header { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.serial-rail-item pre { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: #64748b; }
+.serial-live-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 :deep(.xterm .xterm-selection div) { background-color: rgba(96, 165, 250, 0.55) !important; }
 :deep(.xterm .xterm-rows) { cursor: text; }
+:deep(.xterm) {
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "liga" 1, "calt" 1;
+}
 textarea::selection,
 input::selection { background: #bfdbfe; color: #0f172a; }
 .sftp-status-line { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px; }
@@ -3570,6 +4404,14 @@ button.vault-mini-card.active { border-color:#3b82f6; box-shadow: inset 0 0 0 1p
   .vault-editor-column { width:auto; min-width:0; }
   .split { grid-template-columns: 1fr; }
   .head-left { grid-template-columns: 1fr; }
+  .serial-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .serial-baud-row { grid-template-columns: 1fr; }
+  .serial-send-toolbar { grid-template-columns: 1fr; }
+  .local-tool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .logs-filter-grid { grid-template-columns: 1fr 1fr; }
+  .serial-connect-shell { grid-template-columns: 1fr; }
+  .logs-split { grid-template-columns: 260px minmax(0, 1fr); }
+  .serial-live-shell { grid-template-columns: minmax(0, 1fr) 260px; }
 }
 @media (max-width: 1080px) {
   .hosts-quick-connect { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -3593,6 +4435,16 @@ button.vault-mini-card.active { border-color:#3b82f6; box-shadow: inset 0 0 0 1p
   .startup-auth-grid { grid-template-columns: 1fr; }
   .connect-inline { grid-template-columns: 1fr; }
   .connect-filters { grid-template-columns: 1fr; }
+  .serial-grid,
+  .send-box,
+  .serial-send-toolbar,
+  .serial-send-actions,
+  .local-connect-grid,
+  .logs-filter-grid,
+  .local-tool-grid { grid-template-columns: 1fr; }
+  .logs-split,
+  .serial-live-shell { grid-template-columns: 1fr; }
+  .serial-snippet-rail { display: none; }
 }
 
 .hint { color: #6b7280; font-size: 12px; }

@@ -6,7 +6,7 @@ declare global {
   interface Window {
     lightterm: {
       appGetStorage: () => Promise<{ ok: boolean; configured?: boolean; dbPath?: string }>
-      appGetStorageMeta: () => Promise<{ ok: boolean; configured?: boolean; dbPath?: string; exists?: boolean; size?: number; mtimeMs?: number; encrypted?: boolean; storageVersion?: number; hosts?: number; snippets?: number; vaultKeys?: number }>
+      appGetStorageMeta: () => Promise<{ ok: boolean; configured?: boolean; dbPath?: string; exists?: boolean; size?: number; mtimeMs?: number; encrypted?: boolean; storageVersion?: number; hosts?: number; snippets?: number; vaultKeys?: number; logs?: number }>
       appPickStorageFolder: () => Promise<{ ok: boolean; folder?: string; error?: string }>
       appPickStorageFile: () => Promise<{ ok: boolean; filePath?: string; error?: string }>
       appPickStorageSaveFile: () => Promise<{ ok: boolean; filePath?: string; error?: string }>
@@ -15,6 +15,10 @@ declare global {
       appOpenExternal: (payload: { url: string }) => Promise<{ ok: boolean; error?: string }>
       clipboardRead: () => Promise<{ ok: boolean; text?: string; error?: string }>
       clipboardWrite: (payload: { text: string }) => Promise<{ ok: boolean; error?: string }>
+      auditList: (payload?: { limit?: number; source?: string; keyword?: string }) => Promise<{ ok: boolean; items?: any[]; error?: string }>
+      auditAppend: (payload: { source: string; action: string; target?: string; content?: string; level?: string }) => Promise<{ ok: boolean; item?: any; error?: string }>
+      auditClear: () => Promise<{ ok: boolean; error?: string }>
+      onAuditAppended: (handler: (data: any) => void) => void
       updateGetState: () => Promise<{ ok: boolean; status?: string; message?: string; currentVersion?: string; latestVersion?: string; source?: string; hasUpdate?: boolean; downloaded?: boolean; checking?: boolean; downloading?: boolean; progress?: number; downloadUrl?: string; releaseUrl?: string; error?: string }>
       updateCheck: () => Promise<{ ok: boolean; error?: string }>
       updateDownload: () => Promise<{ ok: boolean; error?: string }>
@@ -44,12 +48,32 @@ declare global {
       syncPushNow: () => Promise<{ ok: boolean; pushed?: number }>
 
       listSerialPorts: () => Promise<any[]>
-      openSerial: (options: { path: string; baudRate?: number; dataBits?: number; stopBits?: number; parity?: 'none' | 'even' | 'odd' }) => Promise<{ ok: boolean; error?: string }>
+      openSerial: (options: {
+        path: string
+        baudRate?: number
+        dataBits?: number
+        stopBits?: number
+        parity?: 'none' | 'even' | 'odd'
+        rtscts?: boolean
+        dsrdtr?: boolean
+        xon?: boolean
+        xoff?: boolean
+      }) => Promise<{ ok: boolean; error?: string }>
+      closeSerial: (payload: { path: string }) => Promise<{ ok: boolean; error?: string }>
       sendSerial: (payload: { path: string; data: string; isHex?: boolean }) => Promise<{ ok: boolean; error?: string }>
       onSerialData: (handler: (data: { path: string; data: string }) => void) => void
+      onSerialError: (handler: (data: { path: string; error: string }) => void) => void
+
+      localConnect: (payload: { sessionId: string; cwd?: string; cols?: number; rows?: number }) => Promise<{ ok: boolean; shell?: string; cwd?: string; error?: string }>
+      localWrite: (payload: { sessionId: string; data: string }) => Promise<{ ok: boolean; error?: string }>
+      localResize: (payload: { sessionId: string; cols: number; rows: number }) => Promise<{ ok: boolean; error?: string }>
+      localDisconnect: (payload: { sessionId: string }) => Promise<{ ok: boolean; error?: string }>
+      onLocalData: (handler: (data: { sessionId: string; data: string; dataBase64?: string }) => void) => void
+      onLocalClose: (handler: (data: { sessionId: string; code?: number; signal?: string }) => void) => void
+      onLocalError: (handler: (data: { sessionId: string; error: string }) => void) => void
 
       sshTest: (config: SSHConfig) => Promise<{ ok: boolean; error?: string }>
-      sshConnect: (config: SSHConfig & { sessionId: string }) => Promise<{ ok: boolean; error?: string }>
+      sshConnect: (config: SSHConfig & { sessionId: string; displayName?: string }) => Promise<{ ok: boolean; error?: string }>
       sshWrite: (payload: { sessionId: string; data: string }) => Promise<{ ok: boolean; error?: string }>
       sshResize: (payload: { sessionId: string; cols: number; rows: number }) => Promise<{ ok: boolean; error?: string }>
       sshDisconnect: (payload: { sessionId: string }) => Promise<{ ok: boolean; error?: string }>
