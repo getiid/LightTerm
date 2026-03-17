@@ -1,8 +1,10 @@
 # AstraShell
 
-![AstraShell Logo](docs/screenshots/astrashell-logo.svg)
+![AstraShell Banner](docs/screenshots/astrashell-banner.png)
 
-AstraShell 是一个面向中文用户的桌面运维终端，聚合 SSH、SFTP、密钥仓库、代码片段、串口与版本更新能力，目标是让“连接服务器到执行运维动作”变成单一工作流。
+![AstraShell Icon](docs/screenshots/astrashell-icon-1024.png)
+
+AstraShell 是一个开源、免费、跨平台（macOS / Windows / Android）的终端工作台，聚合 SSH、SFTP、密钥仓库、代码片段、串口与版本更新能力，目标是让“连接服务器到执行运维动作”变成单一工作流。
 
 ![AstraShell 主机管理界面](docs/screenshots/dashboard-2026-03-13.svg)
 
@@ -136,15 +138,15 @@ AstraShell/
 
 - 仓库：<https://github.com/getiid/AstraShell>
 - 安装包下载：GitHub Releases 附件（`.dmg` / `.exe` / `.apk`）
-- 当前仓库打包版本：`v0.3.11`
-- 当前最新公开版本：`v0.3.11`
+- 当前仓库打包版本：`v0.3.12`
+- 当前最新公开版本：`v0.3.12`
 
 ## 更新源策略（七牛 + GitHub + Gitee）
 
 - 客户端检查更新顺序：`七牛 -> GitHub -> Gitee`
 - 默认七牛更新地址：`https://astra.jitux.com`
 - 如需改成其他目录前缀，可设置环境变量 `ASTRASHELL_UPDATE_BASE_URL`
-- 当前七牛内容将同步到 `v0.3.11`，但 HTTPS 证书配置仍需修复
+- 当前七牛内容将同步到 `v0.3.12`，但 HTTPS 证书配置仍需修复
 - 若要让 Gitee 也可自动更新，需在 Gitee Release 同步上传：
   - `AstraShell-Setup-x.y.z.exe`
   - `AstraShell-Setup-x.y.z.exe.blockmap`
