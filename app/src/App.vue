@@ -2678,6 +2678,7 @@ const connectLocalTerminal = async () => {
   }
 
   const finalCwd = String(res.cwd || localCwd.value || '~')
+  const warningText = String((res as any)?.warning || '').trim()
   const tab: LocalTabItem = {
     id: tabId,
     sessionId,
@@ -2693,7 +2694,7 @@ const connectLocalTerminal = async () => {
   activeTerminalMode.value = 'local'
   focusTerminal.value = true
   saveSessionRestoreState({ type: 'local', cwd: finalCwd })
-  localStatus.value = tab.status
+  localStatus.value = warningText ? `${tab.status} ｜ ⚠ ${warningText}` : tab.status
   localCwd.value = finalCwd
   await nextTick()
   initTerminal()

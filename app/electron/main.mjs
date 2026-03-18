@@ -610,6 +610,49 @@ class JsonDB {
     const dir = path.dirname(this.filePath)
     fs.mkdirSync(dir, { recursive: true })
     const tmpPath = path.join(dir, `.${path.basename(this.filePath)}.${process.pid}.${Date.now()}.tmp`)
+
+    // 防止多端/多实例覆盖：保存前尝试把磁盘上的最新数据与内存数据按 updated_at 合并
+    let mergedData = { ...this.data }
+    try {
+      const diskParsed = readJsonFile(this.filePath)
+      if (diskParsed && typeof diskParsed === 'object') {
+        let diskData = {
+          hosts: Array.isArray(diskParsed.hosts) ? diskParsed.hosts : [],
+          snippets: Array.isArray(diskParsed.snippets) ? diskParsed.snippets : [],
+          snippet_meta: diskParsed.snippet_meta && typeof diskParsed.snippet_meta === 'object'
+            ? diskParsed.snippet_meta
+            : { extra_categories: [], updated_at: 0 },
+          vault_meta: diskParsed.vault_meta || null,
+          vault_keys: Array.isArray(diskParsed.vault_keys) ? diskParsed.vault_keys : [],
+          logs: Array.isArray(diskParsed.logs) ? diskParsed.logs : [],
+          storage_version: Number(diskParsed.storage_version || 2),
+        }
+
+        if (diskParsed.encrypted_payload && this.encryptionKey) {
+          try {
+            const decryptedRaw = decryptText(diskParsed.encrypted_payload, this.encryptionKey)
+            const decrypted = JSON.parse(decryptedRaw)
+            diskData = {
+              hosts: Array.isArray(decrypted.hosts) ? decrypted.hosts : [],
+              snippets: Array.isArray(decrypted.snippets) ? decrypted.snippets : [],
+              snippet_meta: decrypted.snippet_meta && typeof decrypted.snippet_meta === 'object'
+                ? decrypted.snippet_meta
+                : { extra_categories: [], updated_at: 0 },
+              vault_meta: diskParsed.vault_meta || null,
+              vault_keys: Array.isArray(decrypted.vault_keys) ? decrypted.vault_keys : [],
+              logs: Array.isArray(decrypted.logs) ? decrypted.logs : [],
+              storage_version: Number(diskParsed.storage_version || 2),
+            }
+          } catch {}
+        }
+
+        mergedData = mergeDbData(diskData, mergedData)
+        mergedData.vault_meta = mergeVaultMeta(diskData.vault_meta, mergedData.vault_meta)
+      }
+    } catch {}
+
+    this.data = { ...this.data, ...mergedData }
+
     const persist = { ...this.data }
     persist.storage_version = 2
     persist.updated_at = Date.now()

@@ -99,7 +99,22 @@ export function registerLocalIpc(ipcMain, deps) {
         })
       })
       appendAuditLog({ source: 'local', action: 'connect', target, content: `连接成功（目录：${options.cwd}）` })
-      return { ok: true, shell: shellCmd, cwd: options.cwd }
+      if (process.platform === 'win32' && elevated) {
+        appendAuditLog({
+          source: 'local',
+          action: 'info',
+          target,
+          content: '管理员模式的应用内提权桥接尚未启用，当前会话为普通权限（仍在 AstraShell 内）。',
+        })
+      }
+      return {
+        ok: true,
+        shell: shellCmd,
+        cwd: options.cwd,
+        warning: process.platform === 'win32' && elevated
+          ? '管理员模式暂未实现应用内提权，当前为普通权限（不再弹出外部窗口）'
+          : '',
+      }
     } catch (e) {
       const message = e?.message || '启动本地终端失败'
       appendAuditLog({ source: 'local', action: 'error', target: shellCmd, content: message, level: 'error' })

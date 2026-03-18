@@ -64,7 +64,7 @@ declare global {
       onSerialData: (handler: (data: { path: string; data: string }) => void) => void
       onSerialError: (handler: (data: { path: string; error: string }) => void) => void
 
-      localConnect: (payload: { sessionId: string; cwd?: string; cols?: number; rows?: number; shellType?: 'auto' | 'cmd' | 'powershell'; elevated?: boolean }) => Promise<{ ok: boolean; shell?: string; cwd?: string; error?: string }>
+      localConnect: (payload: { sessionId: string; cwd?: string; cols?: number; rows?: number; shellType?: 'auto' | 'cmd' | 'powershell'; elevated?: boolean }) => Promise<{ ok: boolean; shell?: string; cwd?: string; warning?: string; error?: string }>
       localWrite: (payload: { sessionId: string; data: string }) => Promise<{ ok: boolean; error?: string }>
       localResize: (payload: { sessionId: string; cols: number; rows: number }) => Promise<{ ok: boolean; error?: string }>
       localDisconnect: (payload: { sessionId: string }) => Promise<{ ok: boolean; error?: string }>
