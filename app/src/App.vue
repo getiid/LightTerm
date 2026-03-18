@@ -2535,6 +2535,19 @@ const refreshStorageOverview = async () => {
   await refreshStorageInfo()
 }
 
+const refreshStorageDataNow = async () => {
+  const res = await window.lightterm.appRefreshStorageData()
+  if (!res?.ok) {
+    storageMsg.value = `刷新失败：${res?.error || '未知错误'}`
+    return
+  }
+  await refreshStorageOverview()
+  await refreshHosts()
+  if (snippetsLoaded.value || nav.value === 'snippets') await restoreSnippets()
+  if (vaultUnlocked.value && (vaultKeysLoaded.value || nav.value === 'vault')) await refreshVaultKeys()
+  storageMsg.value = res.changed ? '已强制刷新共享数据文件并同步界面' : '已刷新（文件无新变更）'
+}
+
 let storageDataRefreshTimer: number | null = null
 const scheduleStorageDataRefresh = () => {
   if (storageDataRefreshTimer) window.clearTimeout(storageDataRefreshTimer)
@@ -3754,7 +3767,7 @@ onBeforeUnmount(() => {
             <button class="muted tiny" @click="pickStorageFile">选文件</button>
             <button class="muted tiny" @click="pickStorageFolder">选目录</button>
             <button class="tiny" @click="applyStoragePath">应用</button>
-            <button class="muted tiny" @click="refreshStorageOverview">刷新</button>
+            <button class="muted tiny" @click="refreshStorageDataNow">刷新</button>
           </div>
         </div>
         <p>{{ storageMsg }}</p>

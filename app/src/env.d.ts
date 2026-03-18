@@ -7,6 +7,7 @@ declare global {
     lightterm: {
       appGetStorage: () => Promise<{ ok: boolean; configured?: boolean; dbPath?: string }>
       appGetStorageMeta: () => Promise<{ ok: boolean; configured?: boolean; dbPath?: string; exists?: boolean; size?: number; mtimeMs?: number; encrypted?: boolean; storageVersion?: number; hosts?: number; snippets?: number; vaultKeys?: number; logs?: number }>
+      appRefreshStorageData: () => Promise<{ ok: boolean; changed?: boolean; configured?: boolean; dbPath?: string; exists?: boolean; size?: number; mtimeMs?: number; encrypted?: boolean; storageVersion?: number; hosts?: number; snippets?: number; vaultKeys?: number; logs?: number; error?: string }>
       appPickStorageFolder: () => Promise<{ ok: boolean; folder?: string; error?: string }>
       appPickStorageFile: () => Promise<{ ok: boolean; filePath?: string; error?: string }>
       appPickStorageSaveFile: () => Promise<{ ok: boolean; filePath?: string; error?: string }>

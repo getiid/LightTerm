@@ -542,7 +542,9 @@ class JsonDB {
       const stat = fs.statSync(this.filePath)
       const size = Number(stat?.size || 0)
       const mtimeMs = Number(stat?.mtimeMs || 0)
-      return `${size}:${Math.trunc(mtimeMs)}`
+      const raw = fs.readFileSync(this.filePath, 'utf8')
+      const hash = crypto.createHash('sha1').update(raw).digest('hex')
+      return `${size}:${Math.trunc(mtimeMs)}:${hash}`
     } catch {
       return ''
     }
@@ -1735,6 +1737,12 @@ ipcMain.handle('app:get-storage', async () => {
 ipcMain.handle('app:get-storage-meta', async () => {
   refreshDbFromDisk('app:get-storage-meta', false)
   return { ok: true, ...getStorageMeta() }
+})
+
+ipcMain.handle('app:refresh-storage-data', async () => {
+  const changed = refreshDbFromDisk('app:refresh-storage-data', true)
+  if (changed) broadcast('storage:data-changed', { changedAt: Date.now(), manual: true })
+  return { ok: true, changed, ...getStorageMeta() }
 })
 
 ipcMain.handle('app:pick-storage-folder', async () => {

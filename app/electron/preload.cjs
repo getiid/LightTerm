@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('lightterm', {
   appGetStorage: () => ipcRenderer.invoke('app:get-storage'),
   appGetStorageMeta: () => ipcRenderer.invoke('app:get-storage-meta'),
+  appRefreshStorageData: () => ipcRenderer.invoke('app:refresh-storage-data'),
   appPickStorageFolder: () => ipcRenderer.invoke('app:pick-storage-folder'),
   appPickStorageFile: () => ipcRenderer.invoke('app:pick-storage-file'),
   appPickStorageSaveFile: () => ipcRenderer.invoke('app:pick-storage-save-file'),
