@@ -19,12 +19,42 @@ export function registerLocalIpc(ipcMain, deps) {
     const sessionId = String(payload?.sessionId || '').trim()
     if (!sessionId) return { ok: false, error: '缺少 sessionId' }
     closeLocalShellSession(sessionId, 'reconnect')
-    const shellCmd = getLocalShellCommand()
+
+    const shellType = String(payload?.shellType || 'auto').trim().toLowerCase()
+    const elevated = !!payload?.elevated
     const options = buildShellSpawnOptions(String(payload?.cwd || '').trim())
+
+    let shellCmd = getLocalShellCommand()
+    let args = process.platform === 'win32' ? [] : ['-i', '-l']
+
+    if (process.platform === 'win32') {
+      if (shellType === 'cmd') {
+        shellCmd = process.env.COMSPEC || 'cmd.exe'
+        args = []
+      } else if (shellType === 'powershell') {
+        shellCmd = process.env.POWERSHELL_EXE || 'powershell.exe'
+        args = ['-NoLogo']
+      } else {
+        shellCmd = process.env.COMSPEC || 'cmd.exe'
+        args = []
+      }
+
+      if (elevated) {
+        const esc = String(options.cwd || '').replace(/'/g, "''")
+        const elevatedShell = shellType === 'cmd' ? 'cmd.exe' : 'powershell.exe'
+        args = [
+          '-NoLogo',
+          '-NoProfile',
+          '-Command',
+          `Start-Process -Verb RunAs -FilePath '${elevatedShell}' -ArgumentList '-NoExit' -WorkingDirectory '${esc}'; Write-Output '已请求管理员权限，系统会弹出 UAC 窗口。'`,
+        ]
+        shellCmd = process.env.POWERSHELL_EXE || 'powershell.exe'
+      }
+    }
+
     applyLocalShellRuntimeEnv(shellCmd, options.env)
     try {
       const ptySpawn = await getNodePtySpawn()
-      const args = process.platform === 'win32' ? [] : ['-i', '-l']
       const proc = ptySpawn(shellCmd, args, {
         cwd: options.cwd,
         env: options.env,
@@ -32,7 +62,7 @@ export function registerLocalIpc(ipcMain, deps) {
         rows: Number(payload?.rows || 30),
         name: process.platform === 'win32' ? 'xterm-color' : 'xterm-256color',
       })
-      const target = '本地终端'
+      const target = `本地终端${process.platform === 'win32' ? ` (${shellType}${elevated ? '+admin' : ''})` : ''}`
       const sessionRef = { proc, target, silentClose: false }
       localShellSessions.set(sessionId, sessionRef)
       localInputBuffers.set(sessionId, '')

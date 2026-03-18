@@ -431,16 +431,141 @@ type SerialDialogItem = {
 const serialDialogLogs = ref<SerialDialogItem[]>([])
 let serialTimer: number | null = null
 
-const localSessionId = ref('')
-const localConnected = ref(false)
+type LocalTabItem = {
+  id: string
+  sessionId: string
+  name: string
+  cwd: string
+  connected: boolean
+  status: string
+}
+
+const localTabs = ref<LocalTabItem[]>([])
+const activeLocalTabId = ref('')
+const localBufferBySession = ref<Record<string, string>>({})
 const localCwd = ref('')
 const localStatus = ref('未连接')
-const localQuickCommands = [
-  { label: '系统信息', cmd: 'uname -a' },
-  { label: '磁盘占用', cmd: 'df -h' },
-  { label: '目录列表', cmd: 'ls -la' },
-  { label: '进程快照', cmd: 'ps aux | head -n 20' },
+const localShellType = ref<'auto' | 'cmd' | 'powershell'>('auto')
+const localElevated = ref(false)
+
+const activeLocalTab = computed(() => localTabs.value.find((tab) => tab.id === activeLocalTabId.value) || null)
+const activeLocalSessionId = computed(() => activeLocalTab.value?.sessionId || '')
+const localConnected = computed(() => !!activeLocalTab.value?.connected)
+
+type LocalQuickItem = {
+  id: string
+  category: string
+  label: string
+  cmd: string
+}
+
+const defaultLocalQuickItems: LocalQuickItem[] = [
+  { id: 'lq-sysinfo', category: '系统', label: '系统信息', cmd: 'uname -a' },
+  { id: 'lq-disk', category: '系统', label: '磁盘占用', cmd: 'df -h' },
+  { id: 'lq-list', category: '文件', label: '目录列表', cmd: 'ls -la' },
+  { id: 'lq-proc', category: '系统', label: '进程快照', cmd: 'ps aux | head -n 20' },
 ]
+
+const localQuickItems = ref<LocalQuickItem[]>([...defaultLocalQuickItems])
+const localQuickCategory = ref('全部')
+const localQuickEditId = ref('')
+const localQuickEditorVisible = ref(false)
+const localQuickDraftCategory = ref('系统')
+const localQuickDraftLabel = ref('')
+const localQuickDraftCmd = ref('')
+
+const localQuickCategories = computed(() => {
+  const set = new Set<string>(['全部'])
+  localQuickItems.value.forEach((item) => set.add(item.category || '未分类'))
+  return [...set]
+})
+
+const filteredLocalQuickItems = computed(() => {
+  if (localQuickCategory.value === '全部') return localQuickItems.value
+  return localQuickItems.value.filter((item) => item.category === localQuickCategory.value)
+})
+
+const saveLocalQuickItems = () => {
+  try { localStorage.setItem('astrashell.localQuickTools.v1', JSON.stringify(localQuickItems.value)) } catch {}
+}
+
+const restoreLocalQuickItems = () => {
+  try {
+    const raw = localStorage.getItem('astrashell.localQuickTools.v1')
+    if (!raw) return
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) {
+      const normalized = parsed
+        .map((item: any) => ({
+          id: String(item?.id || `lq-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`),
+          category: String(item?.category || '未分类').trim() || '未分类',
+          label: String(item?.label || '').trim(),
+          cmd: String(item?.cmd || '').trim(),
+        }))
+        .filter((item: LocalQuickItem) => item.label && item.cmd)
+      if (normalized.length > 0) localQuickItems.value = normalized
+    }
+  } catch {}
+}
+
+const startEditLocalQuickItem = (item: LocalQuickItem) => {
+  localQuickEditId.value = item.id
+  localQuickDraftCategory.value = item.category || '系统'
+  localQuickDraftLabel.value = item.label
+  localQuickDraftCmd.value = item.cmd
+  localQuickEditorVisible.value = true
+}
+
+const resetLocalQuickDraft = () => {
+  localQuickEditId.value = ''
+  localQuickDraftCategory.value = localQuickCategory.value === '全部' ? '系统' : localQuickCategory.value
+  localQuickDraftLabel.value = ''
+  localQuickDraftCmd.value = ''
+}
+
+const openLocalQuickCreate = () => {
+  resetLocalQuickDraft()
+  localQuickEditorVisible.value = true
+}
+
+const closeLocalQuickEditor = () => {
+  localQuickEditorVisible.value = false
+}
+
+const saveLocalQuickDraft = () => {
+  const category = String(localQuickDraftCategory.value || '').trim() || '未分类'
+  const label = String(localQuickDraftLabel.value || '').trim()
+  const cmd = String(localQuickDraftCmd.value || '').trim()
+  if (!label || !cmd) {
+    localStatus.value = '快捷工具保存失败：名称和命令不能为空'
+    return
+  }
+
+  if (localQuickEditId.value) {
+    const row = localQuickItems.value.find((item) => item.id === localQuickEditId.value)
+    if (row) {
+      row.category = category
+      row.label = label
+      row.cmd = cmd
+    }
+  } else {
+    localQuickItems.value.unshift({
+      id: `lq-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      category,
+      label,
+      cmd,
+    })
+  }
+  saveLocalQuickItems()
+  resetLocalQuickDraft()
+  localQuickEditorVisible.value = false
+}
+
+const removeLocalQuickItem = (id: string) => {
+  localQuickItems.value = localQuickItems.value.filter((item) => item.id !== id)
+  saveLocalQuickItems()
+  if (localQuickEditId.value === id) resetLocalQuickDraft()
+}
 
 const saveSessionRestoreState = (payload: any) => {
   try { localStorage.setItem('astrashell.session.restore.v1', JSON.stringify(payload || {})) } catch {}
@@ -475,8 +600,6 @@ const auditStatus = ref('')
 const auditKeyword = ref('')
 const auditSource = ref('all')
 const selectedAuditTarget = ref('')
-const favoriteCommands = ref<Array<{ id: string; target: string; command: string; createdAt: number }>>([])
-const commandPaletteInput = ref('')
 const sessionRestoreTried = ref(false)
 
 const resolveAuditTarget = (item: AuditLogItem) => {
@@ -508,79 +631,6 @@ const currentAuditLogs = computed(() => {
   return auditLogs.value.filter((item) => resolveAuditTarget(item) === target)
 })
 
-const commandHistoryByTarget = computed(() => {
-  const grouped = new Map<string, Array<{ command: string; ts: number }>>()
-  for (const item of auditLogs.value) {
-    if (item.action !== 'command') continue
-    const target = resolveAuditTarget(item)
-    const command = String(item.content || '').trim()
-    if (!command) continue
-    const list = grouped.get(target) || []
-    if (!list.find((row) => row.command === command)) list.push({ command, ts: Number(item.ts || 0) })
-    grouped.set(target, list)
-  }
-  for (const [key, list] of grouped.entries()) {
-    grouped.set(key, list.sort((a, b) => b.ts - a.ts).slice(0, 80))
-  }
-  return grouped
-})
-
-const activeCommandTarget = computed(() => {
-  if (selectedAuditTarget.value) return selectedAuditTarget.value
-  const current = sshTabs.value.find((t) => t.id === sshSessionId.value)
-  return current?.name || '全局'
-})
-
-const currentCommandHistory = computed(() => {
-  const rows = commandHistoryByTarget.value.get(activeCommandTarget.value) || []
-  const keyword = commandPaletteInput.value.trim().toLowerCase()
-  if (!keyword) return rows
-  return rows.filter((row) => row.command.toLowerCase().includes(keyword))
-})
-
-const currentFavoriteCommands = computed(() => {
-  return favoriteCommands.value.filter((item) => item.target === activeCommandTarget.value || item.target === '全局')
-})
-
-const saveFavoriteCommands = () => {
-  try { localStorage.setItem('astrashell.favoriteCommands.v1', JSON.stringify(favoriteCommands.value)) } catch {}
-}
-
-const restoreFavoriteCommands = () => {
-  try {
-    const raw = localStorage.getItem('astrashell.favoriteCommands.v1')
-    if (!raw) return
-    const parsed = JSON.parse(raw)
-    if (Array.isArray(parsed)) favoriteCommands.value = parsed
-  } catch {}
-}
-
-const runCommandNow = async (command: string) => {
-  const cmd = String(command || '').trim()
-  if (!cmd) return
-  if (activeTerminalMode.value === 'ssh' || activeTerminalMode.value === 'local') {
-    await writeActiveTerminalInput(`${cmd}\n`)
-    focusTerminal.value = true
-    return
-  }
-  sshStatus.value = '请先连接 SSH 或本地终端后执行命令'
-}
-
-const addFavoriteCommand = (command: string) => {
-  const cmd = String(command || '').trim()
-  if (!cmd) return
-  const target = activeCommandTarget.value || '全局'
-  const exists = favoriteCommands.value.find((item) => item.target === target && item.command === cmd)
-  if (exists) return
-  favoriteCommands.value.unshift({ id: `fav-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, target, command: cmd, createdAt: Date.now() })
-  favoriteCommands.value = favoriteCommands.value.slice(0, 200)
-  saveFavoriteCommands()
-}
-
-const removeFavoriteCommand = (id: string) => {
-  favoriteCommands.value = favoriteCommands.value.filter((item) => item.id !== id)
-  saveFavoriteCommands()
-}
 
 const serialTimerActive = computed(() => !!serialTimer)
 const serialConnectionInfo = computed(() => {
@@ -814,8 +864,8 @@ const writeActiveTerminalInput = async (data: string) => {
     await window.lightterm.sendSerial({ path: serialCurrentPath.value, data, isHex: false })
     return
   }
-  if (!localConnected.value || !localSessionId.value) return
-  const res = await window.lightterm.localWrite({ sessionId: localSessionId.value, data })
+  if (!localConnected.value || !activeLocalSessionId.value) return
+  const res = await window.lightterm.localWrite({ sessionId: activeLocalSessionId.value, data })
   if (!res.ok) {
     localStatus.value = `本地终端写入失败：${res.error || '未知错误'}`
     terminal?.writeln(`\r\n[本地终端写入失败] ${res.error || '未知错误'}`)
@@ -823,9 +873,9 @@ const writeActiveTerminalInput = async (data: string) => {
 }
 
 const syncLocalTerminalSize = async () => {
-  if (!terminal || !localConnected.value || !localSessionId.value) return
+  if (!terminal || !localConnected.value || !activeLocalSessionId.value) return
   await window.lightterm.localResize({
-    sessionId: localSessionId.value,
+    sessionId: activeLocalSessionId.value,
     cols: terminal.cols,
     rows: terminal.rows,
   })
@@ -896,21 +946,35 @@ const initTerminal = () => {
   })
   window.lightterm.onLocalData((msg) => {
     const sessionId = String(msg?.sessionId || '')
-    if (!sessionId || sessionId !== localSessionId.value) return
+    if (!sessionId) return
+    const text = decodePlainPayload(msg)
+    localBufferBySession.value[sessionId] = `${localBufferBySession.value[sessionId] || ''}${text}`
+    if (sessionId !== activeLocalSessionId.value) return
     if (activeTerminalMode.value !== 'local') return
-    terminal?.write(decodePlainPayload(msg))
+    terminal?.write(text)
   })
   window.lightterm.onLocalClose((msg) => {
-    if (String(msg?.sessionId || '') !== localSessionId.value) return
-    localConnected.value = false
-    localSessionId.value = ''
-    localStatus.value = `本地终端已断开（code=${Number(msg?.code || 0)}）`
-    if (activeTerminalMode.value === 'local') terminal?.writeln(`\r\n[本地终端已断开] code=${Number(msg?.code || 0)}`)
+    const sessionId = String(msg?.sessionId || '')
+    if (!sessionId) return
+    const tab = localTabs.value.find((item) => item.sessionId === sessionId)
+    if (!tab) return
+    tab.connected = false
+    tab.status = `本地终端已断开（code=${Number(msg?.code || 0)}）`
+    if (sessionId === activeLocalSessionId.value) {
+      localStatus.value = tab.status
+      if (activeTerminalMode.value === 'local') terminal?.writeln(`\r\n[本地终端已断开] code=${Number(msg?.code || 0)}`)
+    }
   })
   window.lightterm.onLocalError((msg) => {
-    if (String(msg?.sessionId || '') !== localSessionId.value) return
-    localStatus.value = `本地终端错误：${msg?.error || '未知错误'}`
-    if (activeTerminalMode.value === 'local') terminal?.writeln(`\r\n[本地终端错误] ${msg?.error || '未知错误'}`)
+    const sessionId = String(msg?.sessionId || '')
+    if (!sessionId) return
+    const tab = localTabs.value.find((item) => item.sessionId === sessionId)
+    if (!tab) return
+    tab.status = `本地终端错误：${msg?.error || '未知错误'}`
+    if (sessionId === activeLocalSessionId.value) {
+      localStatus.value = tab.status
+      if (activeTerminalMode.value === 'local') terminal?.writeln(`\r\n[本地终端错误] ${msg?.error || '未知错误'}`)
+    }
   })
 }
 
@@ -1288,7 +1352,7 @@ const runTerminalSnippet = async () => {
     return
   }
 
-  if (!localConnected.value || !localSessionId.value) {
+  if (!localConnected.value || !activeLocalSessionId.value) {
     snippetStatus.value = '请先连接本地终端'
     return
   }
@@ -1304,7 +1368,7 @@ const runTerminalSnippet = async () => {
   for (let i = 0; i < commands.length; i += 1) {
     if (snippetStopRequested.value) break
     const cmd = commands[i]
-    const res = await window.lightterm.localWrite({ sessionId: localSessionId.value, data: `${cmd}\n` })
+    const res = await window.lightterm.localWrite({ sessionId: activeLocalSessionId.value, data: `${cmd}\n` })
     if (!res.ok) {
       snippetStatus.value = `本地执行失败：${res.error || '未知错误'}`
       break
@@ -1335,7 +1399,7 @@ const sendSnippetRawToTerminal = async () => {
   } else if (activeTerminalMode.value === 'serial' && (!serialConnected.value || !serialCurrentPath.value)) {
     snippetStatus.value = '请先连接串口'
     return
-  } else if (activeTerminalMode.value === 'local' && (!localConnected.value || !localSessionId.value)) {
+  } else if (activeTerminalMode.value === 'local' && (!localConnected.value || !activeLocalSessionId.value)) {
     snippetStatus.value = '请先连接本地终端'
     return
   }
@@ -1343,7 +1407,7 @@ const sendSnippetRawToTerminal = async () => {
     ? await window.lightterm.sshWrite({ sessionId: sshSessionId.value, data: payload })
     : activeTerminalMode.value === 'serial'
       ? await window.lightterm.sendSerial({ path: serialCurrentPath.value, data: payload, isHex: false })
-      : await window.lightterm.localWrite({ sessionId: localSessionId.value, data: payload })
+      : await window.lightterm.localWrite({ sessionId: activeLocalSessionId.value, data: payload })
   snippetStatus.value = res.ok ? `片段原文已发送：${target.name}` : `片段发送失败：${res.error || '未知错误'}`
   terminal?.focus()
 }
@@ -1387,7 +1451,7 @@ const pasteToTerminal = async () => {
     ? await window.lightterm.sshWrite({ sessionId: sshSessionId.value, data: text })
     : activeTerminalMode.value === 'serial'
       ? await window.lightterm.sendSerial({ path: serialCurrentPath.value, data: text, isHex: false })
-      : await window.lightterm.localWrite({ sessionId: localSessionId.value, data: text })
+      : await window.lightterm.localWrite({ sessionId: activeLocalSessionId.value, data: text })
   sshStatus.value = res.ok ? '已粘贴到终端' : `粘贴失败：${res.error || '未知错误'}`
   terminal?.focus()
 }
@@ -2386,16 +2450,6 @@ const refreshVaultKeys = async () => {
   }
 }
 
-const copyDbPath = async () => {
-  if (!storageDbPath.value) return
-  try {
-    await navigator.clipboard.writeText(storageDbPath.value)
-    storageMsg.value = '数据文件路径已复制'
-  } catch {
-    storageMsg.value = '复制失败：请检查系统剪贴板权限'
-  }
-}
-
 const mergeUpdateState = (payload: UpdateStatePayload = {}) => {
   const prev = updateInfo.value
   updateInfo.value = {
@@ -2580,56 +2634,125 @@ const closeSerial = async () => {
 }
 
 const createLocalSessionId = () => `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+const createLocalTabId = () => `ltab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
+const localSessionLabel = (cwd: string, idx: number) => {
+  const normalized = String(cwd || '').trim()
+  const tail = normalized.split(/[\\/]/).filter(Boolean).pop() || '~'
+  return `${tail} · ${idx}`
+}
+
+const switchLocalTab = async (tabId: string) => {
+  const tab = localTabs.value.find((item) => item.id === tabId)
+  if (!tab) return
+  activeLocalTabId.value = tab.id
+  localStatus.value = tab.status || (tab.connected ? '已连接' : '未连接')
+  localCwd.value = tab.cwd || localCwd.value
+  activeTerminalMode.value = 'local'
+  if (focusTerminal.value) {
+    await nextTick()
+    initTerminal()
+    applyTerminalTheme()
+    terminal?.reset()
+    terminal?.write(localBufferBySession.value[tab.sessionId] || '')
+    terminal?.focus()
+    await syncLocalTerminalSize()
+  }
+}
 
 const connectLocalTerminal = async () => {
-  if (localSessionId.value) {
-    await window.lightterm.localDisconnect({ sessionId: localSessionId.value })
-  }
   const sessionId = createLocalSessionId()
-  localSessionId.value = sessionId
+  const tabId = createLocalTabId()
+  const tabIndex = localTabs.value.length + 1
   const res = await window.lightterm.localConnect({
     sessionId,
     cwd: localCwd.value.trim() || undefined,
     cols: 120,
     rows: 30,
+    shellType: localShellType.value,
+    elevated: isWindowsClient.value ? !!localElevated.value : false,
   })
   if (!res.ok) {
-    localConnected.value = false
     localStatus.value = `连接失败：${res.error || '未知错误'}`
     return
   }
-  localConnected.value = true
+
+  const finalCwd = String(res.cwd || localCwd.value || '~')
+  const tab: LocalTabItem = {
+    id: tabId,
+    sessionId,
+    name: localSessionLabel(finalCwd, tabIndex),
+    cwd: finalCwd,
+    connected: true,
+    status: `${res.shell || 'shell'} @ ${finalCwd}`,
+  }
+  localTabs.value.push(tab)
+  localBufferBySession.value[sessionId] = ''
+  await switchLocalTab(tabId)
+
   activeTerminalMode.value = 'local'
   focusTerminal.value = true
-  saveSessionRestoreState({ type: 'local', cwd: res.cwd || localCwd.value || '' })
-  localStatus.value = `${res.shell || 'shell'} @ ${res.cwd || localCwd.value || '~'}`
-  localCwd.value = res.cwd || localCwd.value
+  saveSessionRestoreState({ type: 'local', cwd: finalCwd })
+  localStatus.value = tab.status
+  localCwd.value = finalCwd
   await nextTick()
   initTerminal()
   applyTerminalTheme()
   terminal?.reset()
-  terminal?.writeln(`[本地终端已连接] ${localStatus.value}`)
+  terminal?.writeln(`[本地终端已连接] ${tab.status}`)
   terminal?.focus()
   await syncLocalTerminalSize()
 }
 
+const closeLocalTab = async (tabId: string) => {
+  const tab = localTabs.value.find((item) => item.id === tabId)
+  if (!tab) return
+  if (tab.connected && tab.sessionId) {
+    await window.lightterm.localDisconnect({ sessionId: tab.sessionId })
+  }
+  localTabs.value = localTabs.value.filter((item) => item.id !== tabId)
+  delete localBufferBySession.value[tab.sessionId]
+
+  if (!localTabs.value.length) {
+    activeLocalTabId.value = ''
+    localStatus.value = '已断开'
+    clearSessionRestoreState()
+    if (activeTerminalMode.value === 'local') focusTerminal.value = false
+    return
+  }
+
+  if (activeLocalTabId.value === tabId) {
+    const fallback = localTabs.value[localTabs.value.length - 1]
+    if (fallback) await switchLocalTab(fallback.id)
+  }
+}
+
 const disconnectLocalTerminal = async () => {
-  if (!localSessionId.value) return
-  await window.lightterm.localDisconnect({ sessionId: localSessionId.value })
-  localConnected.value = false
-  localStatus.value = '已断开'
-  localSessionId.value = ''
-  clearSessionRestoreState()
-  if (activeTerminalMode.value === 'local') focusTerminal.value = false
+  if (!activeLocalTabId.value) return
+  await closeLocalTab(activeLocalTabId.value)
 }
 
 const runLocalQuickCommand = async (cmd: string) => {
-  if (!localConnected.value || !localSessionId.value) {
+  const text = String(cmd || '').trim()
+  if (!localConnected.value || !activeLocalSessionId.value) {
     localStatus.value = '请先连接本地终端'
     return
   }
-  const res = await window.lightterm.localWrite({ sessionId: localSessionId.value, data: `${cmd}\n` })
-  if (!res.ok) localStatus.value = `发送失败：${res.error || '未知错误'}`
+  if (!text) return
+  const res = await window.lightterm.localWrite({ sessionId: activeLocalSessionId.value, data: `${text}\n` })
+  if (!res.ok) {
+    localStatus.value = `发送失败：${res.error || '未知错误'}`
+    return
+  }
+  activeTerminalMode.value = 'local'
+  focusTerminal.value = true
+  await nextTick()
+  initTerminal()
+  applyTerminalTheme()
+  terminal?.reset()
+  terminal?.write(localBufferBySession.value[activeLocalSessionId.value] || '')
+  terminal?.focus()
+  await syncLocalTerminalSize()
 }
 
 const restoreLastSessionIfNeeded = async () => {
@@ -2779,7 +2902,8 @@ onMounted(async () => {
   }
 
   restoreSshTabs()
-  restoreFavoriteCommands()
+  restoreLocalQuickItems()
+  resetLocalQuickDraft()
   loadTerminalEncoding()
   if (!startupGateVisible.value) {
     await runPostUnlockStartupTasks()
@@ -2824,8 +2948,8 @@ onBeforeUnmount(() => {
   if (serialConnected.value && serialCurrentPath.value) {
     void window.lightterm.closeSerial({ path: serialCurrentPath.value })
   }
-  if (localSessionId.value) {
-    void window.lightterm.localDisconnect({ sessionId: localSessionId.value })
+  for (const tab of localTabs.value) {
+    if (tab.connected && tab.sessionId) void window.lightterm.localDisconnect({ sessionId: tab.sessionId })
   }
   window.removeEventListener('keydown', handleTerminalHotkeys, true)
   window.removeEventListener('click', hideAllMenus)
@@ -2877,6 +3001,20 @@ onBeforeUnmount(() => {
             <button class="terminal-tab-close" title="关闭并断开" @click.stop="closeSshTab(tab.id)">×</button>
           </div>
           <button class="ghost small" @click="createSshTab()">+ 新标签</button>
+        </div>
+        <div v-else-if="activeTerminalMode === 'local'" class="terminal-tabs">
+          <div
+            class="terminal-tab"
+            v-for="tab in localTabs"
+            :key="tab.id"
+            :class="{ active: activeLocalTabId === tab.id }"
+            @click="switchLocalTab(tab.id)"
+          >
+            <span class="terminal-tab-name">{{ tab.name }}</span>
+            <span class="status-dot" :class="tab.connected ? 'online' : 'offline'"></span>
+            <button class="terminal-tab-close" title="关闭本地标签" @click.stop="closeLocalTab(tab.id)">×</button>
+          </div>
+          <button class="ghost small" @click="connectLocalTerminal()">+ 本地标签</button>
         </div>
         <div class="terminal-actions-row" v-if="activeTerminalMode !== 'serial'">
           <div class="terminal-tools-left">
@@ -3425,24 +3563,79 @@ onBeforeUnmount(() => {
             <p class="hosts-header-sub">科技风终端皮肤，支持中文显示、快捷工具、代码片段复用</p>
           </div>
           <div class="serial-head-actions">
-            <button class="ghost" @click="connectLocalTerminal">连接本地终端</button>
-            <button class="muted" :disabled="!localConnected" @click="disconnectLocalTerminal">断开</button>
+            <button class="ghost" @click="connectLocalTerminal">+ 新本地标签</button>
+            <button class="muted" :disabled="!localConnected" @click="disconnectLocalTerminal">关闭当前标签</button>
           </div>
+        </div>
+        <div class="terminal-tabs local-tabs" v-if="localTabs.length > 0">
+          <div
+            class="terminal-tab"
+            v-for="tab in localTabs"
+            :key="tab.id"
+            :class="{ active: activeLocalTabId === tab.id }"
+            @click="switchLocalTab(tab.id)"
+          >
+            <span class="terminal-tab-name">{{ tab.name }}</span>
+            <span class="status-dot" :class="tab.connected ? 'online' : 'offline'"></span>
+            <button class="terminal-tab-close" title="关闭本地标签" @click.stop="closeLocalTab(tab.id)">×</button>
+          </div>
+        </div>
+        <div class="grid local-shell-grid">
+          <select v-model="localShellType">
+            <option value="auto">终端类型：自动</option>
+            <option value="cmd">终端类型：CMD</option>
+            <option value="powershell">终端类型：PowerShell</option>
+          </select>
+          <label v-if="isWindowsClient" class="serial-inline-check">
+            <input v-model="localElevated" type="checkbox" /> 以管理员模式启动（Windows）
+          </label>
         </div>
         <div class="local-status">{{ localStatus }}</div>
-        <div class="grid local-connect-grid">
-          <input v-model="localCwd" placeholder="启动目录（留空使用当前用户目录）" />
-          <button @click="connectLocalTerminal">打开并进入终端</button>
-        </div>
         <div class="local-tools-card">
           <div class="hosts-left-title">
-            <span>快捷工具</span>
-            <span class="hosts-stat">连接后点击即执行</span>
+            <span>快捷工具（可自定义）</span>
+            <span class="hosts-stat">点击后自动跳到终端查看结果</span>
           </div>
-          <div class="local-tool-grid">
-            <button v-for="item in localQuickCommands" :key="item.cmd" class="ghost" @click="runLocalQuickCommand(item.cmd)">
-              {{ item.label }}
-            </button>
+
+          <div class="local-quick-toolbar">
+            <select v-model="localQuickCategory" class="file-sort">
+              <option v-for="cat in localQuickCategories" :key="cat" :value="cat">{{ cat }}</option>
+            </select>
+            <div class="serial-head-actions">
+              <button class="ghost tiny" @click="openLocalQuickCreate">新建指令</button>
+            </div>
+          </div>
+
+          <div class="local-quick-layout" :class="{ 'editor-open': localQuickEditorVisible }">
+            <div class="local-tool-grid">
+              <div v-for="item in filteredLocalQuickItems" :key="item.id" class="local-tool-item">
+                <button class="ghost" @click="runLocalQuickCommand(item.cmd)">{{ item.label }}</button>
+                <div class="local-tool-meta">
+                  <span class="pill ghost">{{ item.category }}</span>
+                  <button class="ghost tiny" @click="startEditLocalQuickItem(item)">编辑</button>
+                  <button class="danger tiny" @click="removeLocalQuickItem(item.id)">删除</button>
+                </div>
+              </div>
+              <div v-if="filteredLocalQuickItems.length === 0" class="file-row empty">当前分类暂无快捷指令</div>
+            </div>
+
+            <div class="local-quick-editor-column" :class="{ visible: localQuickEditorVisible }">
+              <div class="local-quick-editor-panel">
+                <div class="editor-title">
+                  <Pencil :size="14" /> 快捷工具编辑
+                  <button class="ghost small" @click="closeLocalQuickEditor">收起</button>
+                </div>
+                <div class="local-quick-editor">
+                  <input v-model="localQuickDraftCategory" placeholder="分类（例如：系统/网络/部署）" />
+                  <input v-model="localQuickDraftLabel" placeholder="指令名称（例如：查看端口）" />
+                  <input v-model="localQuickDraftCmd" placeholder="命令（例如：lsof -iTCP -sTCP:LISTEN -n -P）" />
+                  <div class="local-quick-editor-actions">
+                    <button class="muted" @click="saveLocalQuickDraft">{{ localQuickEditId ? '保存修改' : '添加指令' }}</button>
+                    <button class="ghost" @click="resetLocalQuickDraft">清空</button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -3554,19 +3747,17 @@ onBeforeUnmount(() => {
         <div class="divider"></div>
         <h3>本地存储</h3>
         <p>当前数据文件：{{ storageDbPath }}</p>
-        <div class="grid">
+        <div class="storage-path-row">
           <input v-model="storagePathInput" placeholder="输入共享路径（可填目录或 .json/.db 文件）" />
-          <button class="muted" @click="pickStorageFile">选择文件</button>
-          <button class="muted" @click="pickStorageFolder">选择目录</button>
-          <button @click="applyStoragePath">应用路径</button>
-          <button class="muted" @click="refreshStorageOverview">刷新</button>
+          <div class="storage-path-actions">
+            <button class="muted tiny" @click="pickStorageFile">选文件</button>
+            <button class="muted tiny" @click="pickStorageFolder">选目录</button>
+            <button class="tiny" @click="applyStoragePath">应用</button>
+            <button class="muted tiny" @click="refreshStorageOverview">刷新</button>
+          </div>
         </div>
         <p>{{ storageMsg }}</p>
         <p class="hint">{{ storageMetaText || '正在读取数据文件状态...' }}</p>
-        <div class="grid">
-          <button class="muted" @click="refreshStorageOverview">刷新路径</button>
-          <button class="muted" @click="copyDbPath">复制路径</button>
-        </div>
         <p class="hint">建议直接选择同一个 `astrashell.data.json` 文件；也可填目录（会自动拼接默认文件名）。把文件放到 iCloud/OneDrive/共享盘/U 盘即可跨设备读取同一份数据。</p>
         <p class="hint">不再使用“手动同步队列”：所有改动都直接写入数据文件。</p>
       </section>
@@ -3593,35 +3784,6 @@ onBeforeUnmount(() => {
           <input v-model="auditKeyword" placeholder="搜索目标 / 命令 / 错误信息" />
           <button class="muted" @click="refreshAuditLogs">按条件过滤</button>
           <span class="hosts-stat">{{ auditStatus || '未加载' }}</span>
-        </div>
-        <div class="grid" style="grid-template-columns: 1fr 1fr; margin-top: 6px;">
-          <div>
-            <div class="hosts-header-sub">命令历史（目标：{{ activeCommandTarget }}）</div>
-            <input v-model="commandPaletteInput" placeholder="筛选命令历史" />
-            <div class="logs-list" style="max-height: 180px; margin-top: 6px;">
-              <article v-for="row in currentCommandHistory.slice(0, 20)" :key="`hist-${row.ts}-${row.command}`" class="log-item">
-                <pre>{{ row.command }}</pre>
-                <div class="serial-head-actions">
-                  <button class="ghost tiny" @click="runCommandNow(row.command)">执行</button>
-                  <button class="muted tiny" @click="addFavoriteCommand(row.command)">收藏</button>
-                </div>
-              </article>
-            </div>
-          </div>
-          <div>
-            <div class="hosts-header-sub">收藏命令</div>
-            <div class="logs-list" style="max-height: 210px; margin-top: 6px;">
-              <article v-for="fav in currentFavoriteCommands" :key="fav.id" class="log-item">
-                <div class="log-target">{{ fav.target }}</div>
-                <pre>{{ fav.command }}</pre>
-                <div class="serial-head-actions">
-                  <button class="ghost tiny" @click="runCommandNow(fav.command)">执行</button>
-                  <button class="danger tiny" @click="removeFavoriteCommand(fav.id)">取消收藏</button>
-                </div>
-              </article>
-              <div v-if="currentFavoriteCommands.length === 0" class="file-row empty">暂无收藏命令</div>
-            </div>
-          </div>
         </div>
         <div class="logs-split">
           <aside class="logs-target-list">
@@ -3769,7 +3931,7 @@ onBeforeUnmount(() => {
 .sidebar li.active { background: #dbeafe; color: #1d4ed8; font-weight: 600; }
 .sidebar-footer { border: 1px solid #d4dde8; border-radius: 12px; background: #f7fafd; padding: 10px; display: grid; gap: 8px; justify-items: center; }
 .sidebar-footer-logo { width: 34px; height: 34px; border-radius: 0; object-fit: contain; flex-shrink: 0; }
-.sidebar-footer-logo-wide { width: 144px; height: auto; }
+.sidebar-footer-logo-wide { width: 44px; height: auto; }
 .sidebar-footer-text { width: 100%; display: grid; justify-items: center; gap: 2px; }
 .sidebar-footer-title { font-size: 13px; font-weight: 700; color: #0f172a; }
 .sidebar-footer-sub { font-size: 11px; color: #64748b; }
@@ -3781,6 +3943,7 @@ onBeforeUnmount(() => {
 .terminal-mode-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .terminal-actions-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .terminal-tabs { display: flex; align-items: center; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.local-tabs { margin-bottom: 6px; }
 .session-strip { display: flex; align-items: center; gap: 10px; background: #f5f8fc; border: 1px solid #dbe3ee; border-radius: 12px; padding: 8px 10px; }
 .session-strip-title { font-size: 12px; color: #334155; white-space: nowrap; }
 .session-strip-tabs { flex: 1; min-width: 0; }
@@ -3871,9 +4034,19 @@ button.tiny { padding: 4px 10px; font-size: 11px; }
 .serial-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 0; }
 .baud-input-wrap { min-width: 0; }
 .baud-input-wrap input { width: 100%; }
+.local-shell-grid { grid-template-columns: 220px minmax(0, 1fr); margin-top: 0; align-items: center; }
 .local-status { padding: 8px 10px; border-radius: 10px; border: 1px solid #cbd5e1; background: #f8fafc; color: #334155; font-size: 12px; }
-.local-connect-grid { grid-template-columns: 1fr auto; margin-top: 0; }
-.local-tool-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.local-quick-layout { display: grid; grid-template-columns: minmax(0, 1fr) 0; gap: 10px; min-height: 0; }
+.local-quick-layout.editor-open { grid-template-columns: minmax(0, 1fr) 340px; }
+.local-tool-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; align-content: start; }
+.local-tool-item { border: 1px solid #d1dae5; border-radius: 10px; background: #f8fbff; padding: 8px; display: grid; gap: 8px; }
+.local-tool-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.local-quick-toolbar { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.local-quick-editor-column { width: 100%; min-width: 0; overflow: hidden; transition: width .2s ease; }
+.local-quick-editor-column.visible { width: 100%; min-width: 0; }
+.local-quick-editor-panel { background: #f8fafc; border: 1px solid #d3dce6; border-radius: 12px; padding: 12px; height: 100%; }
+.local-quick-editor { margin-top: 6px; display: grid; gap: 8px; }
+.local-quick-editor-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .logs-filter-grid { grid-template-columns: 180px 1fr auto auto; margin-top: 0; align-items: center; }
 .logs-split { flex: 1; min-height: 0; display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 10px; overflow: hidden; }
 .logs-target-list { border: 1px solid #d1dae5; border-radius: 12px; background: #f8fbff; padding: 10px; overflow: auto; min-height: 0; display: grid; gap: 8px; align-content: start; }
@@ -4088,6 +4261,9 @@ button.vault-mini-card.active { border-color:#3b82f6; box-shadow: inset 0 0 0 1p
 .manual-update-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .manual-update-link { color: #2563eb; font-size: 12px; word-break: break-all; text-decoration: none; }
 .manual-update-link:hover { text-decoration: underline; }
+.storage-path-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.storage-path-actions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: nowrap; white-space: nowrap; }
+.storage-path-actions .tiny { min-width: 64px; padding: 6px 8px; }
 .status-bar { height: 28px; border: 1px solid #d1d5db; border-radius: 8px; background: #f8fafc; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; font-size: 12px; color: #374151; z-index: 50; }
 .fixed-bottom { position: fixed; left: 232px; right: 12px; bottom: 8px; }
 .layout.terminal-layout { grid-template-columns: 1fr; }
@@ -4139,6 +4315,10 @@ button.vault-mini-card.active { border-color:#3b82f6; box-shadow: inset 0 0 0 1p
   .serial-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .serial-baud-row { grid-template-columns: 1fr; }
   .serial-send-toolbar { grid-template-columns: 1fr; }
+  .local-shell-grid { grid-template-columns: 1fr; }
+  .local-quick-layout { grid-template-columns: 1fr; }
+  .local-quick-editor-column,
+  .local-quick-editor-column.visible { width: auto; min-width: 0; }
   .local-tool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .logs-filter-grid { grid-template-columns: 1fr 1fr; }
   .serial-connect-shell { grid-template-columns: 1fr; }
@@ -4163,6 +4343,8 @@ button.vault-mini-card.active { border-color:#3b82f6; box-shadow: inset 0 0 0 1p
   .snippets-header { flex-direction: column; align-items: flex-start; }
   .snippets-run-settings input { width: 100%; }
   .vault-toolbar { grid-template-columns: 1fr 1fr; }
+  .storage-path-row { grid-template-columns: 1fr; }
+  .storage-path-actions { flex-wrap: wrap; }
   .startup-db-grid,
   .startup-auth-grid { grid-template-columns: 1fr; }
   .connect-inline { grid-template-columns: 1fr; }
