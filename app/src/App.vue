@@ -2724,7 +2724,7 @@ const connectLocalTerminal = async () => {
     cols: 120,
     rows: 30,
     shellType: localShellType.value,
-    elevated: false,
+    elevated: !!(isWindowsClient.value && localElevated.value),
   })
   if (!res.ok) {
     localStatus.value = `连接失败：${res.error || '未知错误'}`
@@ -3629,7 +3629,7 @@ onBeforeUnmount(() => {
             v-for="tab in localTabs"
             :key="tab.id"
             :class="{ active: activeLocalTabId === tab.id }"
-            @click="switchLocalTab(tab.id)"
+            @click="focusTerminal = true; switchLocalTab(tab.id)"
           >
             <span class="terminal-tab-name">{{ tab.name }}</span>
             <span class="status-dot" :class="tab.connected ? 'online' : 'offline'"></span>
@@ -3642,8 +3642,8 @@ onBeforeUnmount(() => {
             <option value="cmd">终端类型：CMD</option>
             <option value="powershell">终端类型：PowerShell</option>
           </select>
-          <label v-if="isWindowsClient" class="serial-inline-check" title="管理员模式正在重构中，当前版本暂不可用">
-            <input v-model="localElevated" type="checkbox" disabled /> 管理员模式（暂不可用，避免弹外部窗口）
+          <label v-if="isWindowsClient" class="serial-inline-check" title="勾选后连接时将触发 UAC，在 AstraShell 内桥接管理员终端">
+            <input v-model="localElevated" type="checkbox" /> 管理员模式（触发 UAC 后桥接到本体）
           </label>
         </div>
         <div class="local-status">{{ localStatus }}</div>
@@ -4016,7 +4016,7 @@ onBeforeUnmount(() => {
 .sidebar-footer-link:hover { text-decoration: underline; }
 .main { padding: 12px; padding-bottom: 42px; display: flex; flex-direction: column; gap: 10px; height: 100vh; overflow: hidden; }
 .top-actions { flex-shrink: 0; }
-.terminal-top-actions { display: flex; flex-direction: column; gap: 8px; background: #f5f8fc; border: 1px solid #dbe3ee; border-radius: 12px; padding: 8px 10px; }
+.terminal-top-actions { display: flex; flex-direction: column; gap: 8px; background: #f5f8fc; border: 1px solid #dbe3ee; border-radius: 12px; padding: 8px 10px; position: relative; z-index: 5; }
 .terminal-mode-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .terminal-actions-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .terminal-tabs { display: flex; align-items: center; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
@@ -4138,7 +4138,7 @@ button.tiny { padding: 4px 10px; font-size: 11px; }
 .log-time { font-size: 12px; color: #334155; font-weight: 600; }
 .log-target { font-size: 12px; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .log-item pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; color: #0f172a; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px; max-height: 140px; overflow: auto; font-family: ui-monospace, Menlo, Monaco, Consolas, "PingFang SC", "Microsoft YaHei", monospace; }
-.terminal-wrap { flex: 1; min-height: 220px; overflow: hidden; display: grid; grid-template-columns: 1fr; }
+.terminal-wrap { flex: 1; min-height: 220px; overflow: hidden; display: grid; grid-template-columns: 1fr; position: relative; z-index: 1; }
 .terminal-wrap.focus { flex: 1; min-height: 0; }
 .terminal-core { min-height: 0; height: 100%; }
 .terminal { height: 100%; }
