@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('lightterm', {
   appRestoreBackup: (payload) => ipcRenderer.invoke('app:restore-backup', payload),
   appRestart: () => ipcRenderer.invoke('app:restart'),
   appOpenExternal: (payload) => ipcRenderer.invoke('app:open-external', payload),
+  appOpenBackupsFolder: () => ipcRenderer.invoke('app:open-backups-folder'),
   clipboardRead: () => ipcRenderer.invoke('clipboard:read'),
   clipboardWrite: (payload) => ipcRenderer.invoke('clipboard:write', payload),
   auditList: (payload) => ipcRenderer.invoke('audit:list', payload),

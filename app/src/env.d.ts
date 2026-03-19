@@ -17,6 +17,7 @@ declare global {
       appRestoreBackup: (payload: { backupPath: string }) => Promise<{ ok: boolean; dbPath?: string; restartRequired?: boolean; error?: string }>
       appRestart: () => Promise<{ ok: boolean; error?: string }>
       appOpenExternal: (payload: { url: string }) => Promise<{ ok: boolean; error?: string }>
+      appOpenBackupsFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>
       clipboardRead: () => Promise<{ ok: boolean; text?: string; error?: string }>
       clipboardWrite: (payload: { text: string }) => Promise<{ ok: boolean; error?: string }>
       auditList: (payload?: { limit?: number; source?: string; keyword?: string }) => Promise<{ ok: boolean; items?: any[]; error?: string }>

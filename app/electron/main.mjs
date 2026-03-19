@@ -1966,6 +1966,18 @@ ipcMain.handle('app:open-external', async (_event, payload) => {
   }
 })
 
+ipcMain.handle('app:open-backups-folder', async () => {
+  try {
+    const backupDir = path.join(app.getPath('userData'), 'backups')
+    fs.mkdirSync(backupDir, { recursive: true })
+    const err = await shell.openPath(backupDir)
+    if (err) return { ok: false, error: String(err || '打开备份目录失败') }
+    return { ok: true, path: backupDir }
+  } catch (e) {
+    return { ok: false, error: e?.message || '打开备份目录失败' }
+  }
+})
+
 ipcMain.handle('clipboard:read', async () => {
   try {
     return { ok: true, text: clipboard.readText() }

@@ -2604,6 +2604,13 @@ const createDataBackup = async () => {
   if (res.ok) await refreshBackupList()
 }
 
+const openBackupsFolder = async () => {
+  const res = await window.lightterm.appOpenBackupsFolder()
+  storageMsg.value = res.ok
+    ? `已打开备份目录：${res.path || ''}`
+    : `打开备份目录失败：${res.error || '未知错误'}`
+}
+
 const restoreDataBackup = async () => {
   if (!selectedBackupPath.value) {
     storageMsg.value = '请先选择备份文件'
@@ -3822,6 +3829,7 @@ onBeforeUnmount(() => {
           <div class="storage-path-actions">
             <button class="muted tiny" @click="createDataBackup">立即备份</button>
             <button class="muted tiny" @click="refreshBackupList">刷新备份列表</button>
+            <button class="tiny" @click="openBackupsFolder">打开备份位置</button>
           </div>
           <div class="storage-path-row">
             <select v-model="selectedBackupPath">
