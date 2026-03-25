@@ -16,14 +16,11 @@ const formatVaultDate = (value: string | number | null | undefined) => {
     <div class="vault-header">
       <h3>密钥管理</h3>
       <div class="vault-toolbar">
-        <input v-model="vm.vaultMaster.value" type="password" placeholder="主密码" />
-        <button v-if="!vm.vaultInitialized.value" @click="vm.initVault">初始化仓库</button>
-        <button v-else @click="vm.unlockVault">解锁仓库</button>
         <button class="muted" @click="vm.refreshVaultKeys">刷新密钥列表</button>
-        <button class="danger" @click="vm.resetVault">重置仓库</button>
+        <button class="danger" @click="vm.resetVault">清空本地密钥</button>
       </div>
       <p class="vault-status">
-        {{ vm.vaultStatus.value }} ｜ bridge={{ vm.bridgeReady.value ? 'ok' : 'missing' }} ｜ initialized={{ vm.vaultInitialized.value }} unlocked={{ vm.vaultUnlocked.value }}
+        {{ vm.vaultStatus.value }} ｜ bridge={{ vm.bridgeReady.value ? 'ok' : 'missing' }}
       </p>
     </div>
 

@@ -12,6 +12,7 @@ export function useSyncManager(params: UseSyncManagerParams) {
   const syncTargetPath = ref('')
   const syncBaseUrl = ref('')
   const syncToken = ref('')
+  const syncPassword = ref('')
   const syncAutoPullOnStartup = ref(true)
   const syncAutoPushOnChange = ref(true)
   const syncDebounceMs = ref(1500)
@@ -23,6 +24,7 @@ export function useSyncManager(params: UseSyncManagerParams) {
   const syncQueueCount = computed(() => syncQueueItems.value.length)
   const syncState = computed(() => syncStatusPayload.value?.state || {})
   const syncRemoteMeta = computed(() => syncStatusPayload.value?.remote || null)
+  const syncLocalMeta = computed(() => syncStatusPayload.value?.local || null)
 
   const syncRuntimeStatusText = computed(() => {
     if (syncBusy.value || syncState.value?.running) return '同步进行中...'
@@ -56,6 +58,7 @@ export function useSyncManager(params: UseSyncManagerParams) {
     syncTargetPath.value = String(config.targetPath || '')
     syncBaseUrl.value = String(config.baseUrl || '')
     syncToken.value = String(config.token || '')
+    syncPassword.value = String(config.password || '')
     syncAutoPullOnStartup.value = config.autoPullOnStartup !== false
     syncAutoPushOnChange.value = config.autoPushOnChange !== false
     syncDebounceMs.value = Number(config.debounceMs || 1500)
@@ -88,6 +91,7 @@ export function useSyncManager(params: UseSyncManagerParams) {
         targetPath: syncTargetPath.value.trim(),
         baseUrl: '',
         token: '',
+        password: syncPassword.value,
         autoPullOnStartup: syncAutoPullOnStartup.value,
         autoPushOnChange: syncAutoPushOnChange.value,
         debounceMs: syncDebounceMs.value,
@@ -176,11 +180,28 @@ export function useSyncManager(params: UseSyncManagerParams) {
     }
   }
 
+  const shouldSkipStartupAutoPull = () => {
+    const localItemCount = Number(syncLocalMeta.value?.itemCount || 0)
+    const remoteItemCount = Number(syncRemoteMeta.value?.itemCount || 0)
+    const localSize = Number(syncLocalMeta.value?.size || 0)
+    const remoteSize = Number(syncRemoteMeta.value?.size || 0)
+    if (localItemCount <= 0) return false
+    if (remoteItemCount < localItemCount) return true
+    if (remoteItemCount === localItemCount && remoteSize > 0 && remoteSize < localSize) return true
+    return false
+  }
+
   const runStartupSyncPull = async () => {
     if (!syncStatusPayload.value) await refreshSyncStatus()
     if (!syncEnabled.value || !syncAutoPullOnStartup.value) return
     if (syncProvider.value === 'folder' && !syncTargetPath.value) return
     if (syncProvider.value === 'http' && !syncBaseUrl.value) return
+    if (shouldSkipStartupAutoPull()) {
+      syncMsg.value = '已跳过自动下载：本地数据量大于远端，请手动确认后再下载'
+      await refreshSyncStatus()
+      await refreshSyncQueue()
+      return
+    }
     const res = await window.lightterm.syncPullNow()
     if (res.ok && res.changed) await refreshStorageDataNow()
     await refreshSyncStatus()
@@ -193,6 +214,7 @@ export function useSyncManager(params: UseSyncManagerParams) {
     syncTargetPath,
     syncBaseUrl,
     syncToken,
+    syncPassword,
     syncAutoPullOnStartup,
     syncAutoPushOnChange,
     syncDebounceMs,
@@ -202,6 +224,7 @@ export function useSyncManager(params: UseSyncManagerParams) {
     syncStatusPayload,
     syncState,
     syncRemoteMeta,
+    syncLocalMeta,
     syncQueueCount,
     syncRuntimeStatusText,
     syncStatusText,

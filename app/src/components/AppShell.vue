@@ -746,6 +746,7 @@ const {
   bridgeReady,
   vaultInitialized,
   vaultUnlocked,
+  vaultRequiresPassword,
   vaultItems,
   selectedVaultKeyId,
   vaultKeyword,
@@ -805,6 +806,8 @@ const hostsPanelVm = {
   deleteCurrentHost,
 }
 
+let reevaluateVaultGate = () => {}
+
 const {
   storageDbPath,
   storagePathInput,
@@ -833,6 +836,8 @@ const {
   vaultUnlocked,
   vaultKeysLoaded,
   refreshVaultKeys,
+  checkVaultStatus,
+  evaluateVaultGate: () => reevaluateVaultGate(),
   refreshHosts: async () => refreshHosts(),
 })
 
@@ -842,6 +847,7 @@ const {
   syncTargetPath,
   syncBaseUrl,
   syncToken,
+  syncPassword,
   syncAutoPullOnStartup,
   syncAutoPushOnChange,
   syncDebounceMs,
@@ -849,6 +855,7 @@ const {
   syncMsg,
   syncQueueItems,
   syncState,
+  syncLocalMeta,
   syncRemoteMeta,
   syncQueueCount,
   syncRuntimeStatusText,
@@ -899,6 +906,7 @@ const {
   vaultStatus,
   vaultInitialized,
   vaultUnlocked,
+  vaultRequiresPassword,
   refreshVaultKeys,
   initVault,
   unlockVault,
@@ -911,6 +919,8 @@ const {
   snippetStatus,
   formatAppError,
 })
+
+reevaluateVaultGate = () => evaluateVaultGate()
 
 const {
   refreshStorageDataNow,
@@ -1001,12 +1011,14 @@ const settingsPanelVm = {
   syncTargetPath,
   syncBaseUrl,
   syncToken,
+  syncPassword,
   syncAutoPullOnStartup,
   syncAutoPushOnChange,
   syncDebounceMs,
   syncBusy,
   syncMsg,
   syncState,
+  syncLocalMeta,
   syncRemoteMeta,
   syncQueueItems,
   syncQueueCount,
@@ -1031,6 +1043,7 @@ const vaultPanelVm = {
   bridgeReady,
   vaultInitialized,
   vaultUnlocked,
+  vaultRequiresPassword,
   selectedVaultKeyId,
   vaultKeyword,
   vaultKeyName,

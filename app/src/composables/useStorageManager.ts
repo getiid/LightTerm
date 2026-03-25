@@ -8,6 +8,8 @@ type UseStorageManagerParams = {
   vaultUnlocked: Ref<boolean>
   vaultKeysLoaded: Ref<boolean>
   refreshVaultKeys: () => Promise<void>
+  checkVaultStatus: () => Promise<any>
+  evaluateVaultGate: () => void
   refreshHosts: () => Promise<unknown>
 }
 
@@ -20,6 +22,8 @@ export function useStorageManager(params: UseStorageManagerParams) {
     vaultUnlocked,
     vaultKeysLoaded,
     refreshVaultKeys,
+    checkVaultStatus,
+    evaluateVaultGate,
     refreshHosts,
   } = params
 
@@ -30,6 +34,12 @@ export function useStorageManager(params: UseStorageManagerParams) {
   const backupItems = ref<Array<{ name: string; path: string; size: number; mtimeMs: number }>>([])
   const selectedBackupPath = ref('')
   let storageDataRefreshTimer: number | null = null
+
+  const refreshVaultStateAfterDataChange = async () => {
+    const state = await checkVaultStatus()
+    evaluateVaultGate()
+    return state
+  }
 
   const dbFolderFromPath = (dbPath: string) => String(dbPath || '').replace(/[\\/](lightterm\.db|astrashell\.data\.json)$/i, '')
   const isStorageFilePath = (value: string) => /\.(json|db)$/i.test(String(value || '').trim())
@@ -55,16 +65,15 @@ export function useStorageManager(params: UseStorageManagerParams) {
       }
       if (meta.ok) {
         if (!meta.configured) {
-          storageMetaText.value = '尚未选择数据文件。首次启动请先选择“初始化新数据库”或“使用已有数据库”。'
+          storageMetaText.value = '正在准备默认本地数据库...'
           return
         }
         const modified = meta.mtimeMs ? new Date(meta.mtimeMs).toLocaleString() : '-'
         const kb = Math.max(0, Number(meta.size || 0)) / 1024
-        const encrypted = meta.encrypted ? '已加密' : '未加密'
         const fileState = meta.exists ? '存在' : '不存在'
         const sig = String(meta.signature || '').split(':').pop() || ''
         const sigShort = sig ? sig.slice(0, 8) : '-'
-        storageMetaText.value = `当前读取：${meta.dbPath || '-'} ｜ 文件：${fileState} ｜ 大小：${kb.toFixed(1)} KB ｜ 修改时间：${modified} ｜ 数据：主机 ${meta.hosts || 0} / 片段 ${meta.snippets || 0} / 密钥 ${meta.vaultKeys || 0} / 日志 ${meta.logs || 0} ｜ fileId：${meta.fileId || '-'} ｜ rev：${meta.revision ?? 0} ｜ 指纹：${sigShort} ｜ 加密：${encrypted} ｜ 格式：v${meta.storageVersion || 1}`
+        storageMetaText.value = `当前读取：${meta.dbPath || '-'} ｜ 文件：${fileState} ｜ 大小：${kb.toFixed(1)} KB ｜ 修改时间：${modified} ｜ 数据：主机 ${meta.hosts || 0} / 片段 ${meta.snippets || 0} / 密钥 ${meta.vaultKeys || 0} / 快捷工具 ${meta.quickTools || 0} / 日志 ${meta.logs || 0} ｜ fileId：${meta.fileId || '-'} ｜ rev：${meta.revision ?? 0} ｜ 指纹：${sigShort} ｜ 本地存储：明文 ｜ 格式：v${meta.storageVersion || 1}`
       }
     } catch (error) {
       onError?.(`读取数据文件路径失败：${formatAppError(error)}`)
@@ -82,10 +91,13 @@ export function useStorageManager(params: UseStorageManagerParams) {
       return
     }
     await refreshStorageOverview(onConfigured, onError)
+    const vaultState = await refreshVaultStateAfterDataChange()
     await refreshHosts()
     if (snippetsLoaded.value || nav.value === 'snippets') await restoreSnippets()
-    if (vaultUnlocked.value && (vaultKeysLoaded.value || nav.value === 'vault')) await refreshVaultKeys()
-    storageMsg.value = res.changed ? '已强制刷新共享数据文件并同步界面' : '已刷新（文件无新变更）'
+    if ((vaultState?.unlocked ?? vaultUnlocked.value) && (vaultKeysLoaded.value || nav.value === 'vault')) await refreshVaultKeys()
+    storageMsg.value = res.changed
+      ? '已强制刷新本地数据库并同步界面'
+      : '已刷新（文件无新变更）'
   }
 
   const scheduleStorageDataRefresh = (
@@ -98,10 +110,11 @@ export function useStorageManager(params: UseStorageManagerParams) {
       storageDataRefreshTimer = null
       if (startupGateVisible.value) return
       await refreshStorageOverview(onConfigured, onError)
+      const vaultState = await refreshVaultStateAfterDataChange()
       await refreshHosts()
       if (snippetsLoaded.value || nav.value === 'snippets') await restoreSnippets()
-      if (vaultUnlocked.value && (vaultKeysLoaded.value || nav.value === 'vault')) await refreshVaultKeys()
-      storageMsg.value = '检测到共享数据文件更新，已自动刷新'
+      if ((vaultState?.unlocked ?? vaultUnlocked.value) && (vaultKeysLoaded.value || nav.value === 'vault')) await refreshVaultKeys()
+      storageMsg.value = '检测到本地数据库更新，已自动刷新'
     }, 320)
   }
 

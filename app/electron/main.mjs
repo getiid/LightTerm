@@ -507,6 +507,7 @@ function getSyncConfig() {
     targetPath: normalizeStoragePath(String(raw.targetPath || '').trim()),
     baseUrl: String(raw.baseUrl || '').trim().replace(/\/+$/, ''),
     token: String(raw.token || '').trim(),
+    password: String(raw.password || ''),
     autoPullOnStartup: raw.autoPullOnStartup !== false,
     autoPushOnChange: raw.autoPushOnChange !== false,
     debounceMs: Math.max(300, Math.min(60000, Number(raw.debounceMs || DEFAULT_SYNC_DEBOUNCE_MS))),
@@ -518,6 +519,13 @@ function getFileSnapshotMeta(filePath) {
   if (!normalizedPath) return { path: '', exists: false }
   const parsed = readJsonFile(normalizedPath)
   const stat = fs.existsSync(normalizedPath) ? fs.statSync(normalizedPath) : null
+  const summary = parsed?.sync_meta?.summary && typeof parsed.sync_meta.summary === 'object'
+    ? parsed.sync_meta.summary
+    : null
+  const hosts = Number(summary?.hosts || (Array.isArray(parsed?.hosts) ? parsed.hosts.length : 0))
+  const snippets = Number(summary?.snippets || (Array.isArray(parsed?.snippets) ? parsed.snippets.length : 0))
+  const vaultKeys = Number(summary?.vaultKeys || (Array.isArray(parsed?.vault_keys) ? parsed.vault_keys.length : 0))
+  const quickTools = Number(summary?.quickTools || (Array.isArray(parsed?.quick_tools) ? parsed.quick_tools.length : 0))
   return {
     path: normalizedPath,
     exists: !!stat,
@@ -528,11 +536,21 @@ function getFileSnapshotMeta(filePath) {
     fileId: String(parsed?.file_id || ''),
     revision: Number(parsed?.revision || 0),
     signature: getFileSignatureByPath(normalizedPath),
+    hosts,
+    snippets,
+    vaultKeys,
+    quickTools,
+    itemCount: hosts + snippets + vaultKeys + quickTools,
   }
 }
 
 function parseSyncRemoteMeta(input, fallback = {}) {
   const meta = input?.meta && typeof input.meta === 'object' ? input.meta : input
+  const summary = meta?.summary && typeof meta.summary === 'object' ? meta.summary : fallback.summary || {}
+  const hosts = Number(meta?.hosts || summary?.hosts || fallback.hosts || 0)
+  const snippets = Number(meta?.snippets || summary?.snippets || fallback.snippets || 0)
+  const vaultKeys = Number(meta?.vaultKeys || summary?.vaultKeys || fallback.vaultKeys || 0)
+  const quickTools = Number(meta?.quickTools || summary?.quickTools || fallback.quickTools || 0)
   return {
     path: String(meta?.path || fallback.path || ''),
     exists: meta?.exists !== false,
@@ -543,6 +561,11 @@ function parseSyncRemoteMeta(input, fallback = {}) {
     fileId: String(meta?.fileId || meta?.file_id || fallback.fileId || ''),
     revision: Number(meta?.revision || fallback.revision || 0),
     signature: String(meta?.signature || fallback.signature || ''),
+    hosts,
+    snippets,
+    vaultKeys,
+    quickTools,
+    itemCount: Number(meta?.itemCount || summary?.itemCount || fallback.itemCount || (hosts + snippets + vaultKeys + quickTools)),
   }
 }
 
@@ -772,6 +795,10 @@ async function testSyncConnection() {
   try {
     ensureParentDir(validated.targetPath)
     const remoteMeta = getFileSnapshotMeta(validated.targetPath)
+    if (remoteMeta.exists) {
+      const raw = fs.readFileSync(validated.targetPath, 'utf8')
+      extractSyncSnapshotContent(raw, config.password)
+    }
     updateSyncState((state) => {
       state.remoteMeta = remoteMeta
       state.lastRemoteRevision = Number(remoteMeta.revision || 0)
@@ -859,9 +886,12 @@ async function performSyncPull(options = {}) {
         setSyncError('pull', message, { remoteMeta })
         return { ok: false, error: message }
       }
-      writeTextAtomic(localPath, remoteContent)
+      const plainContent = extractSyncSnapshotContent(remoteContent, getSyncConfig().password)
+      writeTextAtomic(localPath, plainContent)
     } else {
-      copyFileAtomic(validated.targetPath, localPath)
+      const remoteContent = fs.readFileSync(validated.targetPath, 'utf8')
+      const plainContent = extractSyncSnapshotContent(remoteContent, getSyncConfig().password)
+      writeTextAtomic(localPath, plainContent)
     }
     db = null
     initDb()
@@ -872,9 +902,19 @@ async function performSyncPull(options = {}) {
       state.lastRemoteRevision = Number(remoteMeta.revision || 0)
       state.remoteMeta = remoteMeta
     })
-    broadcast('storage:data-changed', { changedAt: Date.now(), pulled: true, source: options.reason || 'sync' })
-    setSyncSuccess('pull', `已下载远端数据 rev.${remoteMeta.revision || 0}`)
-    return { ok: true, changed: true, pulled: 1, message: `已下载远端数据 rev.${remoteMeta.revision || 0}` }
+    const successMessage = `已下载远端数据 rev.${remoteMeta.revision || 0}`
+    broadcast('storage:data-changed', {
+      changedAt: Date.now(),
+      pulled: true,
+      source: options.reason || 'sync',
+    })
+    setSyncSuccess('pull', successMessage)
+    return {
+      ok: true,
+      changed: true,
+      pulled: 1,
+      message: successMessage,
+    }
   } catch (e) {
     const message = e?.message || '下载同步数据失败'
     setSyncError('pull', message)
@@ -918,7 +958,7 @@ async function performSyncPush(options = {}) {
     }
 
     if (validated.provider === 'http') {
-      const content = fs.readFileSync(localPath, 'utf8')
+      const content = buildSyncSnapshotContent(fs.readFileSync(localPath, 'utf8'), config.password)
       const pushRes = await httpSyncUpload(config, {
         fileId: localMeta.fileId,
         revision: localMeta.revision,
@@ -944,7 +984,9 @@ async function performSyncPush(options = {}) {
         storageVersion: Number(pushRes?.storageVersion || localMeta.storageVersion || 1),
       })
     } else {
-      copyFileAtomic(localPath, validated.targetPath)
+      const remoteContent = buildSyncSnapshotContent(fs.readFileSync(localPath, 'utf8'), config.password)
+      writeTextAtomic(validated.targetPath, remoteContent)
+      remoteMeta = getFileSnapshotMeta(validated.targetPath)
     }
     updateSyncState((state) => {
       state.lastPushAt = Date.now()
@@ -1086,8 +1128,8 @@ class JsonDB {
   constructor(filePath) {
     this.filePath = filePath
     this.lastFileSignature = ''
-    this.encryptionKey = null
     this.encryptedPayload = null
+    this.decryptState = 'plain'
     this.data = {
       app: 'AstraShell',
       schema_version: 1,
@@ -1106,7 +1148,17 @@ class JsonDB {
   }
 
   setEncryptionKey(key) {
-    this.encryptionKey = key || null
+    this.encryptedPayload = null
+    this.decryptState = 'plain'
+  }
+
+  clearDecryptedData() {
+    this.data.hosts = []
+    this.data.snippets = []
+    this.data.snippet_meta = { extra_categories: [], updated_at: 0 }
+    this.data.vault_keys = []
+    this.data.quick_tools = []
+    this.data.notes = ''
   }
 
   getFileSignature() {
@@ -1114,34 +1166,20 @@ class JsonDB {
   }
 
   shouldEncryptOnSave() {
-    return !!(this.encryptionKey && this.data?.vault_meta?.salt && this.data?.vault_meta?.verifier_hash)
+    return false
   }
 
   applyDecryptedPayload() {
-    if (!this.encryptedPayload || !this.encryptionKey) return false
-    try {
-      const raw = decryptText(this.encryptedPayload, this.encryptionKey)
-      const parsed = JSON.parse(raw)
-      this.data.hosts = Array.isArray(parsed?.hosts) ? parsed.hosts : []
-      this.data.snippets = Array.isArray(parsed?.snippets) ? parsed.snippets : []
-      this.data.snippet_meta = parsed?.snippet_meta && typeof parsed.snippet_meta === 'object'
-        ? {
-          extra_categories: Array.isArray(parsed.snippet_meta.extra_categories) ? parsed.snippet_meta.extra_categories : [],
-          updated_at: Number(parsed.snippet_meta.updated_at || 0),
-        }
-        : { extra_categories: [], updated_at: 0 }
-      this.data.vault_keys = Array.isArray(parsed?.vault_keys) ? parsed.vault_keys : []
-      this.data.quick_tools = Array.isArray(parsed?.quick_tools) ? parsed.quick_tools : []
-      this.data.notes = String(parsed?.notes || '')
-      return true
-    } catch {
-      return false
-    }
+    this.encryptedPayload = null
+    this.decryptState = 'plain'
+    return false
   }
 
   load() {
     if (!fs.existsSync(this.filePath)) {
       this.lastFileSignature = ''
+      this.encryptedPayload = null
+      this.decryptState = 'plain'
       return
     }
     try {
@@ -1150,18 +1188,11 @@ class JsonDB {
       this.data = { ...this.data, ...parsed }
       this.data.file_id = String(this.data.file_id || uuidv4())
       this.data.revision = Number(this.data.revision || 0)
-      if (parsed?.encrypted_payload && typeof parsed.encrypted_payload === 'object') {
-        this.encryptedPayload = parsed.encrypted_payload
-        this.data.hosts = []
-        this.data.snippets = []
-        this.data.snippet_meta = { extra_categories: [], updated_at: 0 }
-        this.data.vault_keys = []
-        this.data.quick_tools = []
-        this.data.notes = ''
-        this.applyDecryptedPayload()
-      } else {
-        this.encryptedPayload = null
-      }
+      this.data.vault_meta = null
+      delete this.data.encrypted_payload
+      delete this.data.sync_meta
+      this.encryptedPayload = null
+      this.decryptState = 'plain'
       this.lastFileSignature = this.getFileSignature()
     } catch {}
   }
@@ -1220,26 +1251,7 @@ class JsonDB {
           storage_version: Number(diskParsed.storage_version || 2),
         }
 
-        if (diskParsed.encrypted_payload && this.encryptionKey) {
-          try {
-            const decryptedRaw = decryptText(diskParsed.encrypted_payload, this.encryptionKey)
-            const decrypted = JSON.parse(decryptedRaw)
-            diskData = {
-              ...diskData,
-              hosts: Array.isArray(decrypted.hosts) ? decrypted.hosts : [],
-              snippets: Array.isArray(decrypted.snippets) ? decrypted.snippets : [],
-              snippet_meta: decrypted.snippet_meta && typeof decrypted.snippet_meta === 'object'
-                ? decrypted.snippet_meta
-                : { extra_categories: [], updated_at: 0 },
-              vault_keys: Array.isArray(decrypted.vault_keys) ? decrypted.vault_keys : [],
-              quick_tools: Array.isArray(decrypted.quick_tools) ? decrypted.quick_tools : [],
-              notes: String(decrypted.notes || ''),
-            }
-          } catch {}
-        }
-
         mergedData = mergeDbData(diskData, mergedData)
-        mergedData.vault_meta = mergeVaultMeta(diskData.vault_meta, mergedData.vault_meta)
         mergedData.file_id = String(this.data.file_id || diskData.file_id || uuidv4())
       }
     } catch {}
@@ -1254,29 +1266,10 @@ class JsonDB {
     this.data.revision = persist.revision
     persist.storage_version = 2
     persist.updated_at = Date.now()
-    if (this.shouldEncryptOnSave()) {
-      const encryptedPayload = encryptText(JSON.stringify({
-        hosts: Array.isArray(this.data.hosts) ? this.data.hosts : [],
-        snippets: Array.isArray(this.data.snippets) ? this.data.snippets : [],
-        snippet_meta: this.data.snippet_meta && typeof this.data.snippet_meta === 'object'
-          ? this.data.snippet_meta
-          : { extra_categories: [], updated_at: 0 },
-        vault_keys: Array.isArray(this.data.vault_keys) ? this.data.vault_keys : [],
-        quick_tools: Array.isArray(this.data.quick_tools) ? this.data.quick_tools : [],
-        notes: String(this.data.notes || ''),
-      }), this.encryptionKey)
-      this.encryptedPayload = encryptedPayload
-      persist.hosts = []
-      persist.snippets = []
-      persist.snippet_meta = { extra_categories: [], updated_at: 0 }
-      persist.vault_keys = []
-      persist.quick_tools = []
-      persist.notes = ''
-      persist.encrypted_payload = encryptedPayload
-    } else {
-      this.encryptedPayload = null
-      delete persist.encrypted_payload
-    }
+    persist.vault_meta = null
+    delete persist.sync_meta
+    delete persist.encrypted_payload
+    this.encryptedPayload = null
     try {
       fs.writeFileSync(tmpPath, JSON.stringify(persist, null, 2), 'utf8')
       fs.renameSync(tmpPath, this.filePath)
@@ -1434,7 +1427,7 @@ function mergeDbData(baseData, incomingData) {
     hosts: mergeRowsById(baseData?.hosts, incomingData?.hosts, getHostUpdatedAt),
     snippets: mergeRowsById(baseData?.snippets, incomingData?.snippets, getSnippetUpdatedAt),
     snippet_meta: mergeSnippetMeta(baseData?.snippet_meta, incomingData?.snippet_meta),
-    vault_meta: mergeVaultMeta(baseData?.vault_meta, incomingData?.vault_meta),
+    vault_meta: null,
     vault_keys: mergeRowsById(baseData?.vault_keys, incomingData?.vault_keys, getVaultKeyUpdatedAt),
     quick_tools: mergeRowsById(baseData?.quick_tools, incomingData?.quick_tools, getQuickToolUpdatedAt),
     notes: String(incomingData?.notes || baseData?.notes || ''),
@@ -1463,6 +1456,59 @@ function decryptText(payload, key) {
   decipher.setAuthTag(Buffer.from(payload.tag, 'base64'))
   const decrypted = Buffer.concat([decipher.update(Buffer.from(payload.data, 'base64')), decipher.final()])
   return decrypted.toString('utf8')
+}
+
+function buildSyncSnapshotContent(plainContent, password) {
+  const raw = String(plainContent || '')
+  if (!password) return raw
+  const parsed = JSON.parse(raw)
+  const summary = {
+    hosts: Array.isArray(parsed?.hosts) ? parsed.hosts.length : 0,
+    snippets: Array.isArray(parsed?.snippets) ? parsed.snippets.length : 0,
+    vaultKeys: Array.isArray(parsed?.vault_keys) ? parsed.vault_keys.length : 0,
+    quickTools: Array.isArray(parsed?.quick_tools) ? parsed.quick_tools.length : 0,
+  }
+  const salt = crypto.randomBytes(16)
+  const key = deriveKey(password, salt)
+  const encryptedPayload = encryptText(raw, key)
+  const verifierHash = crypto.createHash('sha256').update(key).digest('base64')
+  return JSON.stringify({
+    app: String(parsed?.app || 'AstraShell'),
+    schema_version: Number(parsed?.schema_version || 1),
+    storage_version: Number(parsed?.storage_version || 2),
+    file_id: String(parsed?.file_id || uuidv4()),
+    revision: Number(parsed?.revision || 0),
+    updated_at: Number(parsed?.updated_at || Date.now()),
+    sync_meta: {
+      encrypted: true,
+      salt: salt.toString('base64'),
+      verifier_hash: verifierHash,
+      summary: {
+        ...summary,
+        itemCount: summary.hosts + summary.snippets + summary.vaultKeys + summary.quickTools,
+      },
+    },
+    encrypted_payload: encryptedPayload,
+  }, null, 2)
+}
+
+function extractSyncSnapshotContent(rawContent, password) {
+  const raw = String(rawContent || '')
+  const parsed = JSON.parse(raw)
+  if (!parsed?.encrypted_payload || typeof parsed.encrypted_payload !== 'object') return raw
+  const meta = parsed?.sync_meta && typeof parsed.sync_meta === 'object'
+    ? parsed.sync_meta
+    : parsed?.vault_meta && typeof parsed.vault_meta === 'object'
+      ? parsed.vault_meta
+      : null
+  if (!meta?.salt || !meta?.verifier_hash) throw new Error('远端数据库文件已加密，但缺少加密元数据')
+  if (!password) throw new Error('远端数据库文件已加密，请先输入数据库密码')
+  const key = deriveKey(password, Buffer.from(String(meta.salt), 'base64'))
+  const verifierHash = crypto.createHash('sha256').update(key).digest('base64')
+  if (verifierHash !== String(meta.verifier_hash || '')) {
+    throw new Error('数据库密码错误，无法解锁远端数据库文件')
+  }
+  return decryptText(parsed.encrypted_payload, key)
 }
 
 function connectConfigFromPayload(payload) {
@@ -1543,9 +1589,11 @@ async function withSftp(payload, handler) {
 
 function openDbAtPath(filePath, { migrateLegacy = false } = {}) {
   if (migrateLegacy) migrateLegacyDbFileIfNeeded(filePath)
-  const nextDb = new JsonDB(filePath)
-  nextDb.setEncryptionKey(vaultKey)
-  return nextDb
+  return new JsonDB(filePath)
+}
+
+function reconcileVaultStateWithDb(currentDb) {
+  return { requiresUnlock: false, decryptFailed: false }
 }
 
 function requireDbReady({ allowCreate = false } = {}) {
@@ -1556,7 +1604,6 @@ function requireDbReady({ allowCreate = false } = {}) {
   }
   activeDbPath = dbPath
   if (!db || db.filePath !== dbPath) db = openDbAtPath(dbPath, { migrateLegacy: true })
-  db.setEncryptionKey(vaultKey)
   return db
 }
 
@@ -1576,6 +1623,10 @@ function initDb() {
   }
   try {
     db = openDbAtPath(dbPath, { migrateLegacy: true })
+    reconcileVaultStateWithDb(db)
+    if (!fs.existsSync(dbPath) && !db.encryptedPayload) {
+      db.save()
+    }
   } catch (e) {
     db = null
     logMain(`initDb failed path=${dbPath} error=${e?.message || e}`)
@@ -1649,6 +1700,7 @@ function refreshDbFromDisk(reason = 'manual', force = false) {
     } else {
       changed = currentDb.reloadIfChanged()
     }
+    reconcileVaultStateWithDb(currentDb)
     if (changed) logMain(`db refreshed from disk reason=${reason}`)
     return changed
   } catch (e) {
@@ -1688,7 +1740,9 @@ function getStorageMeta() {
     exists,
     size,
     mtimeMs,
-    encrypted: !!currentDb?.encryptedPayload,
+    encrypted: false,
+    decryptState: 'plain',
+    unlockRequired: false,
     storageVersion: Number(currentDb?.data?.storage_version || 1),
     fileId: String(currentDb?.data?.file_id || ''),
     revision: Number(currentDb?.data?.revision || 0),
@@ -1696,6 +1750,12 @@ function getStorageMeta() {
     hosts: Array.isArray(currentDb?.data?.hosts) ? currentDb.data.hosts.length : 0,
     snippets: Array.isArray(currentDb?.data?.snippets) ? currentDb.data.snippets.length : 0,
     vaultKeys: Array.isArray(currentDb?.data?.vault_keys) ? currentDb.data.vault_keys.length : 0,
+    quickTools: Array.isArray(currentDb?.data?.quick_tools) ? currentDb.data.quick_tools.length : 0,
+    itemCount:
+      (Array.isArray(currentDb?.data?.hosts) ? currentDb.data.hosts.length : 0)
+      + (Array.isArray(currentDb?.data?.snippets) ? currentDb.data.snippets.length : 0)
+      + (Array.isArray(currentDb?.data?.vault_keys) ? currentDb.data.vault_keys.length : 0)
+      + (Array.isArray(currentDb?.data?.quick_tools) ? currentDb.data.quick_tools.length : 0),
     logs: Array.isArray(localAuditLogs) ? localAuditLogs.length : 0,
   }
 }
@@ -2979,13 +3039,19 @@ ipcMain.handle('quicktools:set-state', async (_event, payload) => {
 
 ipcMain.handle('vault:status', async () => {
   const dbPath = resolveDbPath()
-  if (!dbPath) return { ok: true, configured: false, exists: false, initialized: false, unlocked: false }
-  if (!storageFileExists(dbPath)) return { ok: true, configured: true, exists: false, initialized: false, unlocked: false }
+  if (!dbPath) return { ok: true, configured: false, exists: false, initialized: true, unlocked: true, requiresPassword: false }
+  if (!storageFileExists(dbPath)) return { ok: true, configured: true, exists: false, initialized: true, unlocked: true, requiresPassword: false }
   try {
     refreshDbFromDisk('vault:status', true)
-    const currentDb = requireDbReady()
-    const row = currentDb.prepare('SELECT id FROM vault_meta WHERE id = 1').get()
-    const state = { ok: true, configured: true, exists: true, initialized: !!row, unlocked: !!vaultKey }
+    const state = {
+      ok: true,
+      configured: true,
+      exists: true,
+      initialized: true,
+      unlocked: true,
+      requiresPassword: false,
+      decryptFailed: false,
+    }
     logMain(`vault:status initialized=${state.initialized} unlocked=${state.unlocked}`)
     return state
   } catch (e) {
@@ -2997,20 +3063,7 @@ ipcMain.handle('vault:status', async () => {
 
 ipcMain.handle('vault:set-master', async (_event, payload) => {
   try {
-    refreshDbFromDisk('vault:set-master', true)
-    const currentDb = requireDbReady({ allowCreate: true })
-    const pwd = String(payload?.masterPassword || '')
-    if (!pwd || pwd.length < 1) return { ok: false, error: '主密码不能为空' }
-
-    const salt = crypto.randomBytes(16)
-    const key = deriveKey(pwd, salt)
-    const verifierHash = crypto.createHash('sha256').update(key).digest('base64')
-    vaultKey = key
-    currentDb.setEncryptionKey(vaultKey)
-    currentDb.prepare('INSERT OR REPLACE INTO vault_meta (id, salt, verifier_hash, updated_at) VALUES (1, ?, ?, ?)').run(salt.toString('base64'), verifierHash, Date.now())
-    currentDb.save()
-    logMain('vault:set-master ok')
-    return { ok: true }
+    return { ok: true, message: '当前版本本地数据库固定为明文模式，无需设置主密码' }
   } catch (e) {
     logMain(`vault:set-master error: ${e?.message || e}`)
     return { ok: false, error: `初始化失败：${e?.message || e}` }
@@ -3019,24 +3072,7 @@ ipcMain.handle('vault:set-master', async (_event, payload) => {
 
 ipcMain.handle('vault:unlock', async (_event, payload) => {
   try {
-    refreshDbFromDisk('vault:unlock', true)
-    const currentDb = requireDbReady()
-    const pwd = String(payload?.masterPassword || '')
-    if (!pwd) return { ok: false, error: '请输入主密码' }
-
-    const meta = currentDb.prepare('SELECT * FROM vault_meta WHERE id = 1').get()
-    if (!meta) return { ok: false, error: '密钥仓库未初始化' }
-
-    const key = deriveKey(pwd, Buffer.from(meta.salt, 'base64'))
-    if (crypto.createHash('sha256').update(key).digest('base64') !== meta.verifier_hash) return { ok: false, error: '主密码错误' }
-    vaultKey = key
-    currentDb.setEncryptionKey(vaultKey)
-    if (currentDb.encryptedPayload && !currentDb.applyDecryptedPayload()) {
-      return { ok: false, error: '数据文件解密失败，请确认当前使用的是同一份数据文件' }
-    }
-    currentDb.save()
-    logMain('vault:unlock ok')
-    return { ok: true }
+    return { ok: true, message: '当前版本本地数据库固定为明文模式，无需解锁' }
   } catch (e) {
     logMain(`vault:unlock error: ${e?.message || e}`)
     return { ok: false, error: `解锁失败：${e?.message || e}` }
@@ -3049,7 +3085,6 @@ ipcMain.handle('vault:reset', async () => {
     const currentDb = requireDbReady()
     currentDb.data.vault_meta = null
     currentDb.data.vault_keys = []
-    currentDb.setEncryptionKey(null)
     currentDb.save()
     vaultKey = null
     logMain('vault:reset ok')
@@ -3063,7 +3098,6 @@ ipcMain.handle('vault:key-save', async (_event, payload) => {
   try {
     refreshDbFromDisk('vault:key-save', true)
     const currentDb = requireDbReady()
-    if (!vaultKey) return { ok: false, error: '密钥仓库未解锁' }
     const sshpk = await getSshpk()
     const id = payload.id || uuidv4()
     const privateKeyText = String(payload.privateKey || '').trim()
@@ -3100,29 +3134,31 @@ ipcMain.handle('vault:key-save', async (_event, payload) => {
       resolvedType = publicKeyText && certificateText ? 'bundle' : publicKeyText ? 'public' : 'certificate'
     }
 
-    const enc = encryptText(JSON.stringify({
-      privateKey: privateKeyText,
-      publicKey: publicKeyText,
-      certificate: certificateText,
-    }), vaultKey)
     let fp = payload.fingerprint || null
     try {
       fp = keyObj?.toPublic().fingerprint('sha256').toString() || null
     } catch {}
 
-    currentDb.prepare(`
-    INSERT INTO vault_keys (id, name, type, fingerprint, encrypted_blob, created_at, updated_at)
-    VALUES (@id,@name,@type,@fingerprint,@encrypted_blob,@created_at,@updated_at)
-    ON CONFLICT(id) DO UPDATE SET name=excluded.name,type=excluded.type,fingerprint=excluded.fingerprint,encrypted_blob=excluded.encrypted_blob,updated_at=excluded.updated_at
-    `).run({
+    const row = {
       id,
       name: payload.name || '未命名密钥',
       type: resolvedType,
       fingerprint: fp,
-      encrypted_blob: JSON.stringify(enc),
       created_at: Date.now(),
       updated_at: Date.now(),
-    })
+    }
+    const idx = currentDb.data.vault_keys.findIndex((item) => item.id === id)
+    const next = {
+      ...currentDb.data.vault_keys[idx],
+      ...row,
+      encrypted_blob: null,
+      privateKey: privateKeyText,
+      publicKey: publicKeyText,
+      certificate: certificateText,
+    }
+    if (idx >= 0) currentDb.data.vault_keys[idx] = next
+    else currentDb.data.vault_keys.push(next)
+    currentDb.save()
     return { ok: true, id, detectedType: resolvedType }
   } catch (e) {
     return { ok: false, error: e?.message || '保存密钥失败' }
@@ -3170,19 +3206,19 @@ ipcMain.handle('vault:key-get', async (_event, payload) => {
   try {
     refreshDbFromDisk('vault:key-get')
     const currentDb = requireDbReady()
-    if (!vaultKey) return { ok: false, error: '密钥仓库未解锁' }
     const row = currentDb.prepare('SELECT * FROM vault_keys WHERE id = ?').get(payload.id)
     if (!row) return { ok: false, error: '密钥不存在' }
-    const raw = decryptText(JSON.parse(row.encrypted_blob), vaultKey)
-    let parsed = { privateKey: '', publicKey: '', certificate: '' }
-    try {
-      const obj = JSON.parse(raw)
-      if (obj && typeof obj === 'object') parsed = { ...parsed, ...obj }
-      else parsed.privateKey = raw
-    } catch {
-      parsed.privateKey = raw
+    return {
+      ok: true,
+      item: {
+        id: row.id,
+        name: row.name,
+        type: row.type,
+        privateKey: String(row.privateKey || ''),
+        publicKey: String(row.publicKey || ''),
+        certificate: String(row.certificate || ''),
+      },
     }
-    return { ok: true, item: { id: row.id, name: row.name, type: row.type, ...parsed } }
   } catch (e) {
     return { ok: false, error: e?.message || '读取密钥失败' }
   }
@@ -3199,6 +3235,10 @@ ipcMain.handle('sync:set-config', async (_event, payload) => {
     targetPath: normalizeStoragePath(parsed.data.targetPath),
     baseUrl: String(parsed.data.baseUrl || '').trim().replace(/\/+$/, ''),
     token: String(parsed.data.token || '').trim(),
+    password: String(parsed.data.password || ''),
+  }
+  if (nextConfig.enabled && !nextConfig.password) {
+    return { ok: false, error: '请先设置同步数据库密码' }
   }
   const localPath = normalizeStoragePath(resolveDbPath() || activeDbPath)
   if (

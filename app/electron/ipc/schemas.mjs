@@ -21,6 +21,7 @@ export const syncSetConfigSchema = z.object({
   targetPath: z.string().trim().default(''),
   baseUrl: z.string().trim().default(''),
   token: z.string().trim().default(''),
+  password: z.string().default(''),
   autoPullOnStartup: z.boolean().default(true),
   autoPushOnChange: z.boolean().default(true),
   debounceMs: z.coerce.number().int().min(300).max(60000).default(1500),

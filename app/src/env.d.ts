@@ -6,8 +6,8 @@ declare global {
   interface Window {
     lightterm: {
       appGetStorage: () => Promise<{ ok: boolean; configured?: boolean; dbPath?: string }>
-      appGetStorageMeta: () => Promise<{ ok: boolean; configured?: boolean; dbPath?: string; exists?: boolean; size?: number; mtimeMs?: number; encrypted?: boolean; storageVersion?: number; fileId?: string; revision?: number; signature?: string; hosts?: number; snippets?: number; vaultKeys?: number; logs?: number }>
-      appRefreshStorageData: () => Promise<{ ok: boolean; changed?: boolean; configured?: boolean; dbPath?: string; exists?: boolean; size?: number; mtimeMs?: number; encrypted?: boolean; storageVersion?: number; fileId?: string; revision?: number; signature?: string; hosts?: number; snippets?: number; vaultKeys?: number; logs?: number; error?: string }>
+      appGetStorageMeta: () => Promise<{ ok: boolean; configured?: boolean; dbPath?: string; exists?: boolean; size?: number; mtimeMs?: number; encrypted?: boolean; decryptState?: string; unlockRequired?: boolean; storageVersion?: number; fileId?: string; revision?: number; signature?: string; hosts?: number; snippets?: number; vaultKeys?: number; quickTools?: number; itemCount?: number; logs?: number }>
+      appRefreshStorageData: () => Promise<{ ok: boolean; changed?: boolean; configured?: boolean; dbPath?: string; exists?: boolean; size?: number; mtimeMs?: number; encrypted?: boolean; decryptState?: string; unlockRequired?: boolean; storageVersion?: number; fileId?: string; revision?: number; signature?: string; hosts?: number; snippets?: number; vaultKeys?: number; quickTools?: number; itemCount?: number; logs?: number; error?: string }>
       appPickStorageFolder: () => Promise<{ ok: boolean; folder?: string; error?: string }>
       appPickStorageFile: () => Promise<{ ok: boolean; filePath?: string; error?: string }>
       appPickStorageSaveFile: () => Promise<{ ok: boolean; filePath?: string; error?: string }>
@@ -39,7 +39,7 @@ declare global {
       quicktoolsGetState: () => Promise<{ ok: boolean; items?: any[]; error?: string }>
       quicktoolsSetState: (payload: { items: any[] }) => Promise<{ ok: boolean; items?: any[]; error?: string }>
 
-      vaultStatus: () => Promise<{ ok: boolean; configured?: boolean; exists?: boolean; initialized: boolean; unlocked: boolean; error?: string }>
+      vaultStatus: () => Promise<{ ok: boolean; configured?: boolean; exists?: boolean; initialized: boolean; unlocked: boolean; requiresPassword?: boolean; decryptFailed?: boolean; error?: string }>
       vaultSetMaster: (payload: { masterPassword: string }) => Promise<{ ok: boolean; error?: string }>
       vaultUnlock: (payload: { masterPassword: string }) => Promise<{ ok: boolean; error?: string }>
       vaultReset: () => Promise<{ ok: boolean; error?: string }>
@@ -49,11 +49,11 @@ declare global {
       vaultKeyImportFile: () => Promise<{ ok: boolean; content?: string; detectedType?: string; filePath?: string; raw?: string; error?: string }>
 
       syncLogin: (payload: { provider?: string; userId?: string; token?: string }) => Promise<{ ok: boolean; error?: string }>
-      syncGetConfig: () => Promise<{ ok: boolean; config?: { enabled: boolean; provider: 'folder' | 'http'; targetPath: string; baseUrl: string; token: string; autoPullOnStartup: boolean; autoPushOnChange: boolean; debounceMs: number }; error?: string }>
-      syncSetConfig: (payload: { enabled: boolean; provider: 'folder' | 'http'; targetPath: string; baseUrl: string; token: string; autoPullOnStartup: boolean; autoPushOnChange: boolean; debounceMs: number }) => Promise<{ ok: boolean; config?: { enabled: boolean; provider: 'folder' | 'http'; targetPath: string; baseUrl: string; token: string; autoPullOnStartup: boolean; autoPushOnChange: boolean; debounceMs: number }; error?: string }>
+      syncGetConfig: () => Promise<{ ok: boolean; config?: { enabled: boolean; provider: 'folder' | 'http'; targetPath: string; baseUrl: string; token: string; password: string; autoPullOnStartup: boolean; autoPushOnChange: boolean; debounceMs: number }; error?: string }>
+      syncSetConfig: (payload: { enabled: boolean; provider: 'folder' | 'http'; targetPath: string; baseUrl: string; token: string; password: string; autoPullOnStartup: boolean; autoPushOnChange: boolean; debounceMs: number }) => Promise<{ ok: boolean; config?: { enabled: boolean; provider: 'folder' | 'http'; targetPath: string; baseUrl: string; token: string; password: string; autoPullOnStartup: boolean; autoPushOnChange: boolean; debounceMs: number }; error?: string }>
       syncStatus: () => Promise<{ ok: boolean; config?: any; state?: any; local?: any; remote?: any; queueCount?: number; error?: string }>
       syncTestConnection: () => Promise<{ ok: boolean; provider?: string; targetPath?: string; remote?: any; error?: string }>
-      syncPullNow: () => Promise<{ ok: boolean; changed?: boolean; pulled?: number; message?: string; conflict?: boolean; error?: string }>
+      syncPullNow: () => Promise<{ ok: boolean; changed?: boolean; pulled?: number; requiresUnlock?: boolean; message?: string; conflict?: boolean; error?: string }>
       syncQueue: () => Promise<{ ok: boolean; items?: any[] }>
       syncClearQueue: () => Promise<{ ok: boolean }>
       syncPushNow: () => Promise<{ ok: boolean; pushed?: number; message?: string; conflict?: boolean; error?: string }>

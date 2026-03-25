@@ -143,27 +143,22 @@ export function useAppStartupLifecycle(params: UseAppStartupLifecycleParams) {
   const syncVaultGateState = async () => {
     const res = await checkVaultStatus()
     if (!res) {
-      startupGateMode.value = 'init'
-      startupGateVisible.value = true
+      startupGateVisible.value = false
       return null
     }
     if (!res.configured) {
-      startupGateMode.value = 'init'
-      startupGateVisible.value = true
-      startupGateError.value = '正在准备默认本地数据库...'
+      startupGateVisible.value = false
       return res
     }
     startupGateEnsureDbPath()
     if (res.error) {
-      startupGateMode.value = 'init'
+      startupGateMode.value = 'loading'
       startupGateVisible.value = true
       startupGateError.value = `数据文件读取失败：${res.error}`
       return res
     }
     if (!res.exists) {
-      startupGateMode.value = 'init'
-      startupGateVisible.value = true
-      startupGateError.value = '首次使用请先设置主密码，系统会自动创建本地数据库。'
+      startupGateVisible.value = false
       return res
     }
     evaluateVaultGate()

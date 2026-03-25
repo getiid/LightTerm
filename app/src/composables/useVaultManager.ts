@@ -12,6 +12,7 @@ export function useVaultManager(params: UseVaultManagerParams) {
   const bridgeReady = ref(typeof window !== 'undefined' && !!window.lightterm)
   const vaultInitialized = ref(false)
   const vaultUnlocked = ref(false)
+  const vaultRequiresPassword = ref(false)
   const vaultItems = ref<any[]>([])
   const selectedVaultKeyId = ref('')
   const vaultKeyword = ref('')
@@ -64,11 +65,16 @@ export function useVaultManager(params: UseVaultManagerParams) {
       const res = await window.lightterm.vaultStatus()
       vaultInitialized.value = !!res.initialized
       vaultUnlocked.value = !!res.unlocked
+      vaultRequiresPassword.value = !!res.requiresPassword
+      if (!vaultRequiresPassword.value && !res.decryptFailed) {
+        vaultStatus.value = '本地数据库明文运行，本地密钥可直接使用'
+      }
       return res
     } catch (error) {
       bridgeReady.value = false
       vaultInitialized.value = false
       vaultUnlocked.value = false
+      vaultRequiresPassword.value = false
       vaultStatus.value = `❌ 读取密钥仓库状态失败：${formatAppError(error)}`
       return null
     }
@@ -76,6 +82,12 @@ export function useVaultManager(params: UseVaultManagerParams) {
 
   const initVault = async () => {
     try {
+      if (!vaultRequiresPassword.value) {
+        vaultStatus.value = '当前版本不再为本地数据库设置主密码'
+        vaultInitialized.value = true
+        vaultUnlocked.value = true
+        return
+      }
       if (!vaultMaster.value) {
         vaultStatus.value = '主密码不能为空'
         return
@@ -96,6 +108,13 @@ export function useVaultManager(params: UseVaultManagerParams) {
 
   const unlockVault = async () => {
     try {
+      if (!vaultRequiresPassword.value) {
+        vaultStatus.value = '本地数据库明文运行，无需解锁'
+        vaultInitialized.value = true
+        vaultUnlocked.value = true
+        await refreshVaultKeys()
+        return
+      }
       if (!vaultMaster.value) {
         vaultStatus.value = '请输入主密码'
         return
@@ -124,7 +143,9 @@ export function useVaultManager(params: UseVaultManagerParams) {
       }
       vaultStatus.value = '正在重置仓库...'
       const res = await window.lightterm.vaultReset()
-      vaultStatus.value = res.ok ? '✅ 密钥仓库已重置，请重新初始化' : `❌ 重置失败：${res.error || '未知错误'}`
+      vaultStatus.value = res.ok
+        ? vaultRequiresPassword.value ? '✅ 密钥仓库已重置，请重新初始化' : '✅ 本地密钥已清空'
+        : `❌ 重置失败：${res.error || '未知错误'}`
       vaultMaster.value = ''
       await checkVault()
       await refreshVaultKeys()
@@ -136,7 +157,7 @@ export function useVaultManager(params: UseVaultManagerParams) {
 
   const openVaultEditor = async (item: any) => {
     if (!item?.id) return
-    if (!vaultUnlocked.value) {
+    if (vaultRequiresPassword.value && !vaultUnlocked.value) {
       vaultStatus.value = '请先解锁密钥仓库'
       return
     }
@@ -155,7 +176,7 @@ export function useVaultManager(params: UseVaultManagerParams) {
   }
 
   const saveVaultKey = async () => {
-    if (!vaultUnlocked.value) {
+    if (vaultRequiresPassword.value && !vaultUnlocked.value) {
       vaultStatus.value = '请先解锁密钥仓库'
       return
     }
@@ -212,6 +233,7 @@ export function useVaultManager(params: UseVaultManagerParams) {
     bridgeReady,
     vaultInitialized,
     vaultUnlocked,
+    vaultRequiresPassword,
     vaultItems,
     selectedVaultKeyId,
     vaultKeyword,

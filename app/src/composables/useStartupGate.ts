@@ -7,6 +7,7 @@ type UseStartupGateParams = {
   vaultStatus: Ref<string>
   vaultInitialized: Ref<boolean>
   vaultUnlocked: Ref<boolean>
+  vaultRequiresPassword: Ref<boolean>
   refreshVaultKeys: () => Promise<void>
   initVault: () => Promise<void>
   unlockVault: () => Promise<void>
@@ -25,6 +26,7 @@ export function useStartupGate(params: UseStartupGateParams) {
     vaultStatus,
     vaultInitialized,
     vaultUnlocked,
+    vaultRequiresPassword,
     refreshVaultKeys,
     initVault,
     unlockVault,
@@ -57,6 +59,12 @@ export function useStartupGate(params: UseStartupGateParams) {
   }
 
   const evaluateVaultGate = () => {
+    if (!vaultRequiresPassword.value) {
+      startupGateVisible.value = false
+      startupGateError.value = ''
+      startupMasterConfirm.value = ''
+      return
+    }
     if (!vaultInitialized.value) {
       startupGateMode.value = 'init'
       startupGateVisible.value = true
@@ -93,6 +101,10 @@ export function useStartupGate(params: UseStartupGateParams) {
 
   const runStartupInit = async () => {
     if (startupGateBusy.value) return
+    if (!vaultRequiresPassword.value) {
+      startupGateVisible.value = false
+      return
+    }
     ensureStartupDbPath()
     if (!vaultMaster.value) {
       startupGateError.value = '请设置主密码'
@@ -118,6 +130,10 @@ export function useStartupGate(params: UseStartupGateParams) {
 
   const runStartupUnlock = async () => {
     if (startupGateBusy.value) return
+    if (!vaultRequiresPassword.value) {
+      startupGateVisible.value = false
+      return
+    }
     if (!vaultMaster.value) {
       startupGateError.value = '请输入主密码'
       return

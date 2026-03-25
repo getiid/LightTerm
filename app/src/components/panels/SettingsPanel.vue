@@ -69,6 +69,13 @@ const { vm } = defineProps<{ vm: any }>()
           <button class="muted tiny" :disabled="vm.syncBusy.value" @click="vm.pickSyncFile">选择数据库</button>
         </div>
       </div>
+      <div class="grid startup-auth-grid">
+        <input
+          v-model="vm.syncPassword.value"
+          type="password"
+          placeholder="同步数据库密码（只用于远端数据库文件加密）"
+        />
+      </div>
       <p class="hint">先选好同步数据库文件，确认自动同步选项，最后再点击保存配置。</p>
       <div class="storage-path-actions">
         <button class="muted tiny" :disabled="vm.syncBusy.value" @click="vm.refreshSyncStatus">刷新状态</button>
@@ -76,7 +83,8 @@ const { vm } = defineProps<{ vm: any }>()
       </div>
       <p>{{ vm.syncMsg.value }}</p>
       <p class="hint">最近上传：{{ vm.formatSyncTime(vm.syncState.value.lastPushAt) }} ｜ 最近下载：{{ vm.formatSyncTime(vm.syncState.value.lastPullAt) }} ｜ 队列：{{ vm.syncQueueCount.value }}</p>
-      <p class="hint">远端：{{ vm.syncRemoteMeta.value?.path || vm.syncTargetPath.value || '-' }} ｜ rev：{{ vm.syncRemoteMeta.value?.revision ?? 0 }} ｜ 文件：{{ vm.syncRemoteMeta.value?.exists ? '存在' : '不存在' }}</p>
+      <p class="hint">本地：{{ vm.syncLocalMeta.value?.itemCount ?? 0 }} 项 ｜ 远端：{{ vm.syncRemoteMeta.value?.itemCount ?? 0 }} 项 ｜ 远端 rev：{{ vm.syncRemoteMeta.value?.revision ?? 0 }} ｜ 文件：{{ vm.syncRemoteMeta.value?.exists ? '存在' : '不存在' }}</p>
+      <p class="hint">远端路径：{{ vm.syncRemoteMeta.value?.path || vm.syncTargetPath.value || '-' }}</p>
       <div class="storage-path-actions">
         <button class="tiny" :disabled="vm.syncBusy.value" @click="vm.syncPullNow">立即下载</button>
         <button class="tiny" :disabled="vm.syncBusy.value" @click="vm.syncPushNow">立即上传</button>
@@ -94,7 +102,8 @@ const { vm } = defineProps<{ vm: any }>()
           <button class="muted tiny" :disabled="vm.syncBusy.value" @click="vm.refreshSyncQueue">刷新队列</button>
         </div>
       </div>
-      <p class="hint">同步失败时可以先立即下载、立即上传或重试失败任务；仍有问题时再回到上面的备份恢复。</p>
+      <p class="hint">自动下载只会在远端数据不小于本地时执行；如果远端明显更小，系统会跳过自动下载，等你手动确认。</p>
+      <p class="hint">同步失败时可以先立即下载、立即上传或重试失败任务；仍有问题时再回到下面的备份恢复。</p>
     </div>
 
     <div class="divider"></div>
