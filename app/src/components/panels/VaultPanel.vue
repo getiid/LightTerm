@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { KeyRound } from 'lucide-vue-next'
+import { KeyRound, Trash2, Upload, Save } from 'lucide-vue-next'
 
 const { vm } = defineProps<{ vm: any }>()
 
@@ -15,10 +15,6 @@ const formatVaultDate = (value: string | number | null | undefined) => {
   <section class="panel vault-panel">
     <div class="vault-header">
       <h3>密钥管理</h3>
-      <div class="vault-toolbar">
-        <button class="muted" @click="vm.refreshVaultKeys">刷新密钥列表</button>
-        <button class="danger" @click="vm.resetVault">清空本地密钥</button>
-      </div>
       <p class="vault-status">
         {{ vm.vaultStatus.value }} ｜ bridge={{ vm.bridgeReady.value ? 'ok' : 'missing' }}
       </p>
@@ -31,20 +27,29 @@ const formatVaultDate = (value: string | number | null | undefined) => {
           <button class="ghost small" @click="vm.clearVaultEditor">新建密钥</button>
         </div>
         <div class="vault-card-grid">
-          <button
+          <div
             v-for="k in vm.filteredVaultItems.value"
             :key="k.id"
             class="vault-mini-card"
             :class="{ active: vm.selectedVaultKeyId.value === k.id }"
             @click="vm.openVaultEditor(k)"
+            @keydown.enter="vm.openVaultEditor(k)"
+            @keydown.space.prevent="vm.openVaultEditor(k)"
+            tabindex="0"
+            role="button"
           >
             <div class="vault-mini-head">
               <span class="vault-mini-title">{{ k.name }}</span>
-              <span class="pill ghost">{{ k.type }}</span>
+              <div class="vault-mini-actions">
+                <span class="pill ghost">{{ k.type }}</span>
+                <button class="vault-mini-action danger" title="删除密钥" @click.stop="vm.deleteVaultKey(k)">
+                  <Trash2 :size="12" />
+                </button>
+              </div>
             </div>
             <div class="vault-mini-fp">{{ k.fingerprint || '无指纹' }}</div>
             <div class="vault-mini-time">{{ formatVaultDate(k.updated_at) }}</div>
-          </button>
+          </div>
           <div v-if="vm.filteredVaultItems.value.length === 0" class="file-row empty">暂无密钥数据</div>
         </div>
       </div>
@@ -57,22 +62,29 @@ const formatVaultDate = (value: string | number | null | undefined) => {
           </div>
           <div class="vault-form-grid">
             <input v-model="vm.vaultKeyName.value" placeholder="密钥名称" />
-            <select v-model="vm.vaultKeyType.value">
-              <option value="auto">自动识别</option>
-              <option value="openssh">OpenSSH</option>
-              <option value="pem">PEM</option>
-              <option value="ppk">PPK</option>
-              <option value="public">Public</option>
-              <option value="certificate">Certificate</option>
-              <option value="bundle">Bundle</option>
-            </select>
+            <div class="vault-type-row">
+              <span class="vault-field-label">密钥组</span>
+              <select v-model="vm.vaultKeyType.value">
+                <option value="auto">自动识别</option>
+                <option value="openssh">OpenSSH</option>
+                <option value="pem">PEM</option>
+                <option value="ppk">PPK</option>
+                <option value="public">Public</option>
+                <option value="certificate">Certificate</option>
+                <option value="bundle">Bundle</option>
+              </select>
+            </div>
+            <p class="hint vault-form-hint">私钥/公钥/证书三项至少填写一项即可保存。</p>
             <textarea v-model="vm.vaultPrivateKey.value" class="key-input" placeholder="Private Key（可选）"></textarea>
             <textarea v-model="vm.vaultPublicKey.value" class="key-input" placeholder="Public Key（可选）"></textarea>
             <textarea v-model="vm.vaultCertificate.value" class="key-input" placeholder="Certificate（可选）"></textarea>
-            <p class="hint">私钥/公钥/证书三项至少填写一项即可保存。</p>
             <div class="vault-actions">
-              <button class="ghost" @click="vm.importVaultKeyFile">导入文件</button>
-              <button @click="vm.saveVaultKey">{{ vm.selectedVaultKeyId.value ? '保存修改' : '保存密钥组' }}</button>
+              <button class="vault-action-btn ghost" @click="vm.importVaultKeyFile">
+                <Upload :size="14" /> 导入文件
+              </button>
+              <button class="vault-action-btn primary" @click="vm.saveVaultKey">
+                <Save :size="14" /> {{ vm.selectedVaultKeyId.value ? '保存修改' : '保存密钥组' }}
+              </button>
             </div>
           </div>
         </div>

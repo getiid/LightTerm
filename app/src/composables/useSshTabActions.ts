@@ -46,9 +46,20 @@ export function useSshTabActions(params: {
     renderActiveSshBuffer()
   }
 
-  const createSshTab = (name = '新会话') => {
+  const createSshTab = (
+    name = '新会话',
+    meta?: { hostId?: string; host?: string; port?: number; username?: string },
+  ) => {
     const id = buildSessionId()
-    sshTabs.value = [...sshTabs.value, { id, name, connected: false }]
+    sshTabs.value = [...sshTabs.value, {
+      id,
+      name,
+      connected: false,
+      hostId: meta?.hostId || '',
+      host: meta?.host || '',
+      port: Number(meta?.port || 0) || undefined,
+      username: meta?.username || '',
+    }]
     ensureSshBuffer(id)
     sshSessionId.value = id
     sshConnected.value = false
@@ -57,9 +68,12 @@ export function useSshTabActions(params: {
     return id
   }
 
-  const ensureActiveSshSession = (name = '新会话') => {
+  const ensureActiveSshSession = (
+    name = '新会话',
+    meta?: { hostId?: string; host?: string; port?: number; username?: string },
+  ) => {
     if (sshSessionId.value && sshTabs.value.some((tab) => tab.id === sshSessionId.value)) return sshSessionId.value
-    return createSshTab(name)
+    return createSshTab(name, meta)
   }
 
   const clearSshTabs = () => {
@@ -84,13 +98,14 @@ export function useSshTabActions(params: {
     sshBufferBySession.delete(sessionId)
 
     if (nextTabs.length === 0) {
+      if (shouldDisconnect) {
+        try { await window.lightterm.sshDisconnect({ sessionId }) } catch {}
+      }
       clearSshTabs()
       focusTerminal.value = false
+      activeTerminalMode.value = 'ssh'
       nav.value = 'hosts'
       clearSessionRestoreState()
-      if (shouldDisconnect) {
-        void window.lightterm.sshDisconnect({ sessionId }).catch(() => {})
-      }
       return
     }
 
@@ -100,11 +115,12 @@ export function useSshTabActions(params: {
     if (!nextActive) return
     sshSessionId.value = nextActive.id
     sshConnected.value = !!nextActive.connected
+    activeTerminalMode.value = 'ssh'
     saveSshTabs()
     renderActiveSshBuffer()
     if (!nextTabs.some((item) => item.connected)) clearSessionRestoreState()
     if (shouldDisconnect) {
-      void window.lightterm.sshDisconnect({ sessionId }).catch(() => {})
+      try { await window.lightterm.sshDisconnect({ sessionId }) } catch {}
     }
   }
 

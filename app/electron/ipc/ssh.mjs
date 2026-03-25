@@ -1,4 +1,174 @@
-import { remoteConnSchema, safeParse, sshConnectSchema, sshResizeSchema, sshSessionIdSchema, sshWriteSchema } from './schemas.mjs'
+import { remoteConnSchema, safeParse, sshConnectSchema, sshExecScriptSchema, sshResizeSchema, sshSessionIdSchema, sshWriteSchema } from './schemas.mjs'
+
+const SSH_METRICS_COMMAND = `LC_ALL=C sh -lc '
+cpu1=$(awk "/^cpu /{idle=\\$5+\\$6; total=0; for(i=2;i<=NF;i++) total+=\\$i; print total, idle; exit}" /proc/stat 2>/dev/null)
+sleep 0.2
+cpu2=$(awk "/^cpu /{idle=\\$5+\\$6; total=0; for(i=2;i<=NF;i++) total+=\\$i; print total, idle; exit}" /proc/stat 2>/dev/null)
+mem=$(awk "/^MemTotal:/{t=\\$2} /^MemAvailable:/{a=\\$2} END{print t+0, a+0}" /proc/meminfo 2>/dev/null)
+disk=$(df -kP / 2>/dev/null | awk "NR==2 {gsub(/%/, \\"\\", \\$5); print \\$2+0, \\$3+0, \\$5+0}")
+net=$(awk -F "[: ]+" "BEGIN{rx=0;tx=0} NR>2 && \\$1 != \\"lo\\" {rx+=\\$3; tx+=\\$11} END{print rx+0, tx+0}" /proc/net/dev 2>/dev/null)
+printf "cpu1=%s\\ncpu2=%s\\nmem=%s\\ndisk=%s\\nnet=%s\\n" "$cpu1" "$cpu2" "$mem" "$disk" "$net"
+'`
+
+function runSshExec(session, command, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let streamRef = null
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      try { streamRef?.close?.() } catch {}
+      reject(new Error('采集服务器状态超时'))
+    }, timeoutMs)
+
+    session.conn.exec(command, (err, stream) => {
+      if (settled) return
+      if (err) {
+        clearTimeout(timer)
+        settled = true
+        reject(err)
+        return
+      }
+      streamRef = stream
+      const chunks = []
+      const errs = []
+      stream.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+      stream.stderr?.on?.('data', (chunk) => errs.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+      stream.on('close', () => {
+        if (settled) return
+        clearTimeout(timer)
+        settled = true
+        const stderr = Buffer.concat(errs).toString('utf8').trim()
+        if (stderr && chunks.length === 0) {
+          reject(new Error(stderr))
+          return
+        }
+        resolve(Buffer.concat(chunks).toString('utf8'))
+      })
+      stream.on('error', (error) => {
+        if (settled) return
+        clearTimeout(timer)
+        settled = true
+        reject(error)
+      })
+    })
+  })
+}
+
+function parseMetricPair(rawValue) {
+  return String(rawValue || '')
+    .trim()
+    .split(/\s+/)
+    .map((value) => Number(value || 0))
+}
+
+function clampPercent(value) {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(100, value))
+}
+
+function parseServerMetricOutput(rawText) {
+  const rows = Object.fromEntries(
+    String(rawText || '')
+      .split(/\r?\n/)
+      .map((line) => {
+        const index = line.indexOf('=')
+        if (index <= 0) return null
+        return [line.slice(0, index).trim(), line.slice(index + 1).trim()]
+      })
+      .filter(Boolean),
+  )
+
+  const [cpuTotal1, cpuIdle1] = parseMetricPair(rows.cpu1)
+  const [cpuTotal2, cpuIdle2] = parseMetricPair(rows.cpu2)
+  const [memTotalKb, memAvailableKb] = parseMetricPair(rows.mem)
+  const [diskTotalKb, diskUsedKb, diskPercentRaw] = parseMetricPair(rows.disk)
+  const [rxBytes, txBytes] = parseMetricPair(rows.net)
+
+  const cpuTotalDelta = Math.max(0, cpuTotal2 - cpuTotal1)
+  const cpuIdleDelta = Math.max(0, cpuIdle2 - cpuIdle1)
+  const cpuPercent = cpuTotalDelta > 0
+    ? clampPercent(((cpuTotalDelta - cpuIdleDelta) / cpuTotalDelta) * 100)
+    : null
+  const memoryUsedKb = Math.max(0, memTotalKb - memAvailableKb)
+  const memoryPercent = memTotalKb > 0 ? clampPercent((memoryUsedKb / memTotalKb) * 100) : null
+  const diskPercent = diskTotalKb > 0
+    ? clampPercent(diskPercentRaw > 0 ? diskPercentRaw : (diskUsedKb / diskTotalKb) * 100)
+    : null
+
+  return {
+    supported: !!(cpuTotal1 || cpuTotal2 || memTotalKb || diskTotalKb || rxBytes || txBytes),
+    cpuPercent,
+    memoryPercent,
+    diskPercent,
+    memoryUsedKb,
+    memoryTotalKb: memTotalKb,
+    diskUsedKb,
+    diskTotalKb,
+    rxBytes,
+    txBytes,
+  }
+}
+
+function runStandaloneSshScript({
+  createSSHClient,
+  attachKeyboardHandler,
+  connectConfigFromPayload,
+  payload,
+}) {
+  return new Promise(async (resolve) => {
+    const conn = await createSSHClient()
+    attachKeyboardHandler(conn, payload.password)
+    let settled = false
+    let timer = null
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      try { conn.end() } catch {}
+      resolve(value)
+    }
+
+    timer = setTimeout(() => {
+      finish({ ok: false, error: '脚本执行超时' })
+    }, Number(payload.timeoutMs || 120000))
+
+    conn.on('ready', () => {
+      conn.exec('sh -se', (err, stream) => {
+        if (err) {
+          finish({ ok: false, error: err.message || '脚本执行失败' })
+          return
+        }
+        const stdout = []
+        const stderr = []
+        let exitCode = 0
+        stream.on('data', (chunk) => stdout.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+        stream.stderr?.on?.('data', (chunk) => stderr.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+        stream.on('exit', (code) => {
+          exitCode = Number(code || 0)
+        })
+        stream.on('close', () => {
+          const out = Buffer.concat(stdout).toString('utf8')
+          const errText = Buffer.concat(stderr).toString('utf8')
+          finish({
+            ok: exitCode === 0,
+            code: exitCode,
+            stdout: out,
+            stderr: errText,
+            error: exitCode === 0 ? '' : (errText.trim() || `脚本退出码 ${exitCode}`),
+          })
+        })
+        stream.on('error', (error) => {
+          finish({ ok: false, error: error?.message || '脚本执行失败' })
+        })
+        stream.write(`set -e\nexport LC_ALL=C\n${String(payload.script || '').trim()}\n`)
+        stream.end()
+      })
+    }).on('error', (err) => {
+      finish({ ok: false, error: err?.message || 'SSH 连接失败' })
+    }).connect(connectConfigFromPayload(payload))
+  })
+}
 
 export function registerSshIpc(ipcMain, deps) {
   const {
@@ -15,6 +185,7 @@ export function registerSshIpc(ipcMain, deps) {
     sshInputBuffers,
     sshOutputBuffers,
   } = deps
+  const metricSamples = new Map()
 
   ipcMain.handle('ssh:test', async (_event, config) => {
     const parsed = safeParse(remoteConnSchema, config)
@@ -25,6 +196,14 @@ export function registerSshIpc(ipcMain, deps) {
       attachKeyboardHandler(conn, validatedConfig.password)
       conn.on('ready', () => { conn.end(); resolve({ ok: true }) }).on('error', (err) => resolve({ ok: false, error: err.message })).connect(connectConfigFromPayload(validatedConfig))
     })
+  })
+
+  ipcMain.handle('ssh:list', async () => {
+    const items = [...sshSessions.entries()].map(([sessionId, session]) => ({
+      sessionId,
+      target: String(session?.target || ''),
+    }))
+    return { ok: true, items }
   })
 
   ipcMain.handle('ssh:connect', async (_event, payload) => {
@@ -75,6 +254,7 @@ export function registerSshIpc(ipcMain, deps) {
               sshSessions.delete(sessionId)
               sshInputBuffers.delete(sessionId)
               sshOutputBuffers.delete(sessionId)
+              metricSamples.delete(sessionId)
               flushResponseLogsForSession('ssh', sessionId)
             }
             if (sessionRef.silentClose) {
@@ -98,6 +278,17 @@ export function registerSshIpc(ipcMain, deps) {
         broadcast('ssh:error', { sessionId, error: message })
         finish({ ok: false, error: message })
       }).connect(connectConfigFromPayload(validatedPayload))
+    })
+  })
+
+  ipcMain.handle('ssh:exec-script', async (_event, payload) => {
+    const parsed = safeParse(sshExecScriptSchema, payload)
+    if (!parsed.ok) return { ok: false, error: parsed.error }
+    return await runStandaloneSshScript({
+      createSSHClient,
+      attachKeyboardHandler,
+      connectConfigFromPayload,
+      payload: parsed.data,
     })
   })
 
@@ -134,8 +325,57 @@ export function registerSshIpc(ipcMain, deps) {
     const target = String(session?.target || `${session?.conn?.config?.username || 'user'}@${session?.conn?.config?.host || 'host'}:${Number(session?.conn?.config?.port || 22)}`)
     session.silentClose = true
     session.stream.end('exit\n'); session.conn.end(); sshSessions.delete(sessionId); sshInputBuffers.delete(sessionId); sshOutputBuffers.delete(sessionId)
+    metricSamples.delete(sessionId)
     flushResponseLogsForSession('ssh', sessionId)
     appendAuditLog({ source: 'ssh', action: 'disconnect', target, content: '用户手动断开' })
     return { ok: true }
+  })
+
+  ipcMain.handle('ssh:metrics', async (_event, payload) => {
+    const parsed = safeParse(sshSessionIdSchema, payload)
+    if (!parsed.ok) return { ok: false, error: parsed.error }
+    const { sessionId } = parsed.data
+    const session = sshSessions.get(sessionId)
+    if (!session) return { ok: false, error: 'SSH 会话不存在' }
+    try {
+      const output = await runSshExec(session, SSH_METRICS_COMMAND, 6000)
+      const nextMetrics = parseServerMetricOutput(output)
+      if (!nextMetrics.supported) {
+        return { ok: true, supported: false, metrics: null, error: '' }
+      }
+      const now = Date.now()
+      const prev = metricSamples.get(sessionId)
+      let rxBytesPerSec = 0
+      let txBytesPerSec = 0
+      if (prev && now > prev.ts) {
+        const elapsedMs = now - prev.ts
+        if (elapsedMs > 0) {
+          rxBytesPerSec = Math.max(0, ((nextMetrics.rxBytes || 0) - (prev.rxBytes || 0)) * 1000 / elapsedMs)
+          txBytesPerSec = Math.max(0, ((nextMetrics.txBytes || 0) - (prev.txBytes || 0)) * 1000 / elapsedMs)
+        }
+      }
+      metricSamples.set(sessionId, {
+        ts: now,
+        rxBytes: nextMetrics.rxBytes || 0,
+        txBytes: nextMetrics.txBytes || 0,
+      })
+      return {
+        ok: true,
+        supported: true,
+        metrics: {
+          cpuPercent: nextMetrics.cpuPercent,
+          memoryPercent: nextMetrics.memoryPercent,
+          diskPercent: nextMetrics.diskPercent,
+          memoryUsedKb: nextMetrics.memoryUsedKb,
+          memoryTotalKb: nextMetrics.memoryTotalKb,
+          diskUsedKb: nextMetrics.diskUsedKb,
+          diskTotalKb: nextMetrics.diskTotalKb,
+          rxBytesPerSec,
+          txBytesPerSec,
+        },
+      }
+    } catch (error) {
+      return { ok: false, error: error?.message || '读取服务器状态失败' }
+    }
   })
 }

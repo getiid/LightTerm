@@ -1,100 +1,107 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue'
+import { Menu, X } from 'lucide-vue-next'
+
 const { vm } = defineProps<{ vm: any }>()
+
+const toolsDrawerOpen = ref(false)
+
+const closeToolsDrawer = () => {
+  toolsDrawerOpen.value = false
+}
+
+const toggleToolsDrawer = () => {
+  toolsDrawerOpen.value = !toolsDrawerOpen.value
+}
+
+watch(() => vm.focusTerminal.value, (visible: boolean) => {
+  if (!visible) closeToolsDrawer()
+})
+
+watch(() => vm.activeTerminalMode.value, () => {
+  closeToolsDrawer()
+})
 </script>
 
 <template>
-  <div>
+  <div class="terminal-workspace" :class="{ active: vm.focusTerminal.value }">
     <div class="top-actions terminal-top-actions" v-if="vm.focusTerminal.value">
-      <div class="terminal-mode-line">
-        <span class="status-pill mode">{{ vm.terminalModeLabel.value }}</span>
-        <span class="status-pill plain">{{ vm.terminalTargetLabel.value }}</span>
-      </div>
-      <div v-if="vm.activeTerminalMode.value === 'ssh'" class="terminal-tabs">
-        <div
-          v-for="tab in vm.sshTabs.value"
-          :key="tab.id"
-          class="terminal-tab"
-          :class="{ active: vm.sshSessionId.value === tab.id }"
-          @click="vm.switchSshTab(tab.id)"
-        >
-          <span class="terminal-tab-name">{{ tab.name }}</span>
-          <span class="status-dot" :class="tab.connected ? 'online' : 'offline'"></span>
-          <button class="terminal-tab-close" title="关闭并断开" @click.stop="vm.closeSshTab(tab.id)">×</button>
+      <div class="terminal-mode-line" :class="{ 'ssh-mode-line': vm.activeTerminalMode.value === 'ssh' }">
+        <span class="status-pill mode terminal-mode-pill" :class="{ 'ssh-terminal-mode-pill': vm.activeTerminalMode.value === 'ssh' }">
+          {{ vm.terminalModeLabel.value }}
+        </span>
+        <div v-if="vm.activeTerminalMode.value === 'ssh'" class="terminal-tabs terminal-tabs-inline">
+          <div
+            v-for="tab in vm.sshTabs.value"
+            :key="tab.id"
+            class="terminal-tab"
+            :class="{ active: vm.sshSessionId.value === tab.id }"
+          >
+            <button type="button" class="terminal-tab-main" @click="vm.switchSshTab(tab.id)">
+              <span class="terminal-tab-name">{{ tab.name }}</span>
+              <span class="status-dot" :class="tab.connected ? 'online' : 'offline'"></span>
+            </button>
+            <button
+              type="button"
+              class="terminal-tab-close"
+              title="关闭并断开"
+              @pointerdown.stop.prevent
+              @mousedown.stop.prevent
+              @click.stop.prevent="vm.handleSshTabClose(tab.id)"
+            >
+              ×
+            </button>
+          </div>
         </div>
-        <button class="ghost small" @click="vm.createSshTab">+ 新标签</button>
+        <span v-else class="status-pill plain">{{ vm.terminalTargetLabel.value }}</span>
+        <div v-if="vm.activeTerminalMode.value === 'ssh'" class="terminal-mode-tools">
+          <button type="button" class="ghost small terminal-return-btn" @click="vm.openSshConnectionChooser()">返回</button>
+          <button type="button" class="ghost small terminal-menu-btn" title="终端工具" @click="toggleToolsDrawer">
+            <Menu :size="16" />
+          </button>
+        </div>
+        <div v-else-if="vm.activeTerminalMode.value === 'local'" class="terminal-mode-tools">
+          <button type="button" class="ghost small terminal-menu-btn" title="终端工具" @click="toggleToolsDrawer">
+            <Menu :size="16" />
+          </button>
+        </div>
       </div>
-      <div v-else-if="vm.activeTerminalMode.value === 'local'" class="terminal-tabs">
+      <div v-if="vm.activeTerminalMode.value === 'local'" class="terminal-tabs">
         <div
           v-for="tab in vm.localTabs.value"
           :key="tab.id"
           class="terminal-tab"
           :class="{ active: vm.activeLocalTabId.value === tab.id }"
-          @click="vm.switchLocalTab(tab.id)"
         >
-          <span class="terminal-tab-name">{{ tab.name }}</span>
-          <span class="status-dot" :class="tab.connected ? 'online' : 'offline'"></span>
-          <button class="terminal-tab-close" title="关闭本地标签" @click.stop="vm.closeLocalTab(tab.id)">×</button>
+          <button type="button" class="terminal-tab-main" @click="vm.switchLocalTab(tab.id)">
+            <span class="terminal-tab-name">{{ tab.name }}</span>
+            <span class="status-dot" :class="tab.connected ? 'online' : 'offline'"></span>
+          </button>
+          <button
+            type="button"
+            class="terminal-tab-close"
+            title="关闭本地标签"
+            @click="vm.closeLocalTab(tab.id)"
+          >
+            ×
+          </button>
         </div>
-        <button class="ghost small" @click="vm.connectLocalTerminal">+ 本地标签</button>
+        <button type="button" class="ghost small" @click="vm.connectLocalTerminal()">+ 本地标签</button>
       </div>
-      <div v-if="vm.activeTerminalMode.value !== 'serial'" class="terminal-actions-row">
+      <div v-if="vm.activeTerminalMode.value === 'serial'" class="serial-live-toolbar">
         <div class="terminal-tools-left">
-          <button class="ghost" @click="vm.exitTerminalView">返回模块视图</button>
-          <button class="ghost" @click="vm.selectAllTerminal">全选</button>
-          <button class="ghost" @click="vm.copyTerminalSelection">复制选中</button>
-          <button class="ghost" @click="vm.pasteToTerminal">粘贴</button>
-          <button v-if="vm.activeTerminalMode.value === 'local'" class="danger" @click="vm.disconnectLocalTerminal">断开本地</button>
+          <button class="ghost terminal-tool-btn" @click="vm.exitTerminalView">返回串口面板</button>
+          <button class="danger terminal-tool-btn terminal-tool-btn-danger" @click="vm.closeSerial">断开串口</button>
         </div>
         <div class="terminal-tools-right">
-          <select v-model="vm.terminalEncoding.value" class="encoding-select" title="终端解码">
-            <option value="utf-8">终端编码：UTF-8</option>
-            <option value="gb18030">终端编码：GBK/GB18030</option>
-          </select>
-          <select v-model="vm.terminalSnippetId.value">
+          <select v-model="vm.terminalSnippetId.value" class="terminal-tool-select">
             <option value="">选择代码片段</option>
             <option v-for="item in vm.terminalSnippetItems.value" :key="item.id" :value="item.id">
               {{ item.name }} · {{ item.category }}
             </option>
           </select>
-          <button class="muted" :disabled="vm.snippetRunning.value" @click="vm.runTerminalSnippet">执行片段</button>
-          <button class="ghost" @click="vm.sendSnippetRawToTerminal">发送原文</button>
-          <button class="ghost" @click="vm.openSnippetsPanel">打开片段</button>
+          <button class="muted terminal-tool-btn" :disabled="vm.snippetRunning.value" @click="vm.runTerminalSnippet">执行片段</button>
         </div>
-      </div>
-      <div v-else class="serial-live-toolbar">
-        <div class="terminal-tools-left">
-          <button class="ghost" @click="vm.exitTerminalView">返回串口面板</button>
-          <button class="ghost" @click="vm.copyTerminalSelection">复制选中</button>
-          <button class="ghost" @click="vm.pasteToTerminal">粘贴</button>
-          <button class="danger" @click="vm.closeSerial">断开串口</button>
-        </div>
-        <div class="terminal-tools-right">
-          <select v-model="vm.terminalSnippetId.value">
-            <option value="">选择代码片段</option>
-            <option v-for="item in vm.terminalSnippetItems.value" :key="item.id" :value="item.id">
-              {{ item.name }} · {{ item.category }}
-            </option>
-          </select>
-          <button class="muted" :disabled="vm.snippetRunning.value" @click="vm.runTerminalSnippet">执行片段</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-else-if="vm.sshTabs.value.length > 0 && vm.activeTerminalMode.value === 'ssh'" class="session-strip">
-      <div class="session-strip-title">活动 SSH 会话</div>
-      <div class="terminal-tabs session-strip-tabs">
-        <div
-          v-for="tab in vm.sshTabs.value"
-          :key="tab.id"
-          class="terminal-tab"
-          :class="{ active: vm.sshSessionId.value === tab.id }"
-          @click="vm.focusSshSession(tab.id)"
-        >
-          <span class="terminal-tab-name">{{ tab.name }}</span>
-          <span class="status-dot" :class="tab.connected ? 'online' : 'offline'"></span>
-          <button class="terminal-tab-close" title="关闭并断开" @click.stop="vm.closeSshTab(tab.id)">×</button>
-        </div>
-        <button class="ghost small" @click="vm.createAndFocusSshTab">+ 新标签</button>
       </div>
     </div>
 
@@ -129,5 +136,37 @@ const { vm } = defineProps<{ vm: any }>()
         </div>
       </aside>
     </section>
+    <div v-if="toolsDrawerOpen && vm.activeTerminalMode.value !== 'serial'" class="terminal-tools-overlay" @click="closeToolsDrawer"></div>
+    <aside v-if="toolsDrawerOpen && vm.activeTerminalMode.value !== 'serial'" class="terminal-tools-drawer">
+      <div class="terminal-tools-drawer-head">
+        <strong>终端工具</strong>
+        <button type="button" class="ghost small terminal-drawer-close" @click="closeToolsDrawer">
+          <X :size="16" />
+        </button>
+      </div>
+      <div class="terminal-tools-drawer-body">
+        <label class="terminal-drawer-field">
+          <span>终端编码</span>
+          <select v-model="vm.terminalEncoding.value" class="terminal-tool-select encoding-select" title="终端解码">
+            <option value="utf-8">UTF-8</option>
+            <option value="gb18030">GBK / GB18030</option>
+          </select>
+        </label>
+        <label class="terminal-drawer-field">
+          <span>代码片段</span>
+          <select v-model="vm.terminalSnippetId.value" class="terminal-tool-select">
+            <option value="">选择代码片段</option>
+            <option v-for="item in vm.terminalSnippetItems.value" :key="item.id" :value="item.id">
+              {{ item.name }} · {{ item.category }}
+            </option>
+          </select>
+        </label>
+        <div class="terminal-drawer-actions">
+          <button class="muted terminal-tool-btn" :disabled="vm.snippetRunning.value" @click="vm.runTerminalSnippet">执行片段</button>
+          <button class="ghost terminal-tool-btn" @click="vm.sendSnippetRawToTerminal">发送原文</button>
+          <button class="ghost terminal-tool-btn" @click="vm.openSnippetsPanel">打开片段</button>
+        </div>
+      </div>
+    </aside>
   </div>
 </template>

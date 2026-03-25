@@ -7,6 +7,7 @@ type FsRow = {
   createdAt?: number
   modifiedAt?: number
   mtime?: number
+  size?: number
 }
 
 type UseSftpViewStateParams = {
@@ -29,8 +30,10 @@ type UseSftpViewStateParams = {
   leftConnectKeyword: Ref<string>
   rightConnectCategory: Ref<string>
   rightConnectKeyword: Ref<string>
-  localSortBy: Ref<'name' | 'createdAt' | 'modifiedAt'>
-  remoteSortBy: Ref<'name' | 'createdAt' | 'modifiedAt'>
+  localSortBy: Ref<'name' | 'modifiedAt' | 'size' | 'kind'>
+  localSortDirection: Ref<'asc' | 'desc'>
+  remoteSortBy: Ref<'name' | 'modifiedAt' | 'size' | 'kind'>
+  remoteSortDirection: Ref<'asc' | 'desc'>
   isWindowsClient: Readonly<Ref<boolean>>
 }
 
@@ -56,7 +59,9 @@ export function useSftpViewState(params: UseSftpViewStateParams) {
     rightConnectCategory,
     rightConnectKeyword,
     localSortBy,
+    localSortDirection,
     remoteSortBy,
+    remoteSortDirection,
     isWindowsClient,
   } = params
 
@@ -74,20 +79,39 @@ export function useSftpViewState(params: UseSftpViewStateParams) {
 
   const sortFsRows = <T extends FsRow>(
     rows: T[],
-    sortBy: 'name' | 'createdAt' | 'modifiedAt',
+    sortBy: 'name' | 'modifiedAt' | 'size' | 'kind',
+    direction: 'asc' | 'desc',
   ) => [...rows].sort((a, b) => {
     if (!!a.isDir !== !!b.isDir) return a.isDir ? -1 : 1
     if (sortBy === 'name') {
       const aName = String(a.name || a.filename || '').toLowerCase()
       const bName = String(b.name || b.filename || '').toLowerCase()
-      return aName.localeCompare(bName, 'zh-Hans-CN')
+      return direction === 'asc'
+        ? aName.localeCompare(bName, 'zh-Hans-CN')
+        : bName.localeCompare(aName, 'zh-Hans-CN')
     }
-    const aTime = sortBy === 'createdAt' ? toTimeMs(a.createdAt) : toTimeMs(a.modifiedAt || a.mtime)
-    const bTime = sortBy === 'createdAt' ? toTimeMs(b.createdAt) : toTimeMs(b.modifiedAt || b.mtime)
-    if (aTime !== bTime) return bTime - aTime
+    if (sortBy === 'modifiedAt') {
+      const aTime = toTimeMs(a.modifiedAt || a.mtime)
+      const bTime = toTimeMs(b.modifiedAt || b.mtime)
+      if (aTime !== bTime) return direction === 'asc' ? aTime - bTime : bTime - aTime
+    } else if (sortBy === 'size') {
+      const aSize = Number(a.size || 0)
+      const bSize = Number(b.size || 0)
+      if (aSize !== bSize) return direction === 'asc' ? aSize - bSize : bSize - aSize
+    } else if (sortBy === 'kind') {
+      const aKind = a.isDir ? '目录' : '文件'
+      const bKind = b.isDir ? '目录' : '文件'
+      if (aKind !== bKind) {
+        return direction === 'asc'
+          ? aKind.localeCompare(bKind, 'zh-Hans-CN')
+          : bKind.localeCompare(aKind, 'zh-Hans-CN')
+      }
+    }
     const aName = String(a.name || a.filename || '').toLowerCase()
     const bName = String(b.name || b.filename || '').toLowerCase()
-    return aName.localeCompare(bName, 'zh-Hans-CN')
+    return direction === 'asc'
+      ? aName.localeCompare(bName, 'zh-Hans-CN')
+      : bName.localeCompare(aName, 'zh-Hans-CN')
   })
 
   const filterFsRowsByKeyword = (rows: any[], keyword: string, nameKey: 'name' | 'filename') => {
@@ -96,10 +120,10 @@ export function useSftpViewState(params: UseSftpViewStateParams) {
     return rows.filter((item) => String(item?.[nameKey] || '').toLowerCase().includes(q))
   }
 
-  const sortedLocalRows = computed(() => sortFsRows(localRows.value, localSortBy.value))
-  const sortedSftpRows = computed(() => sortFsRows(sftpRows.value, remoteSortBy.value))
-  const sortedLeftSftpRows = computed(() => sortFsRows(leftSftpRows.value, localSortBy.value))
-  const sortedRightLocalRows = computed(() => sortFsRows(rightLocalRows.value, remoteSortBy.value))
+  const sortedLocalRows = computed(() => sortFsRows(localRows.value, localSortBy.value, localSortDirection.value))
+  const sortedSftpRows = computed(() => sortFsRows(sftpRows.value, remoteSortBy.value, remoteSortDirection.value))
+  const sortedLeftSftpRows = computed(() => sortFsRows(leftSftpRows.value, localSortBy.value, localSortDirection.value))
+  const sortedRightLocalRows = computed(() => sortFsRows(rightLocalRows.value, remoteSortBy.value, remoteSortDirection.value))
 
   const leftDisplayRows = computed(() => {
     const source = leftPanelMode.value === 'local' ? sortedLocalRows.value : sortedLeftSftpRows.value

@@ -1,6 +1,14 @@
 import { ref } from 'vue'
 
-type SshTab = { id: string; name: string; connected: boolean }
+export type SshTab = {
+  id: string
+  name: string
+  connected: boolean
+  hostId?: string
+  host?: string
+  port?: number
+  username?: string
+}
 
 export function useTerminalTabs() {
   const sshTabs = ref<SshTab[]>([])

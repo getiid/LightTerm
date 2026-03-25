@@ -569,6 +569,17 @@ function parseSyncRemoteMeta(input, fallback = {}) {
   }
 }
 
+function shouldSkipSyncPullByRevision(localMeta, remoteMeta) {
+  const localRevision = Number(localMeta?.revision || 0)
+  const remoteRevision = Number(remoteMeta?.revision || 0)
+  const localItemCount = Number(localMeta?.itemCount || 0)
+  const remoteItemCount = Number(remoteMeta?.itemCount || 0)
+
+  if (!localMeta?.exists) return false
+  if (localItemCount <= 0 && remoteItemCount > 0) return false
+  return remoteRevision <= localRevision
+}
+
 function withSyncAuthHeaders(config, extraHeaders = {}) {
   const headers = { ...extraHeaders }
   if (config.token) headers.Authorization = `Bearer ${config.token}`
@@ -861,7 +872,7 @@ async function performSyncPull(options = {}) {
     }
 
     const localMeta = getFileSnapshotMeta(localPath)
-    if (localMeta.exists && Number(remoteMeta.revision || 0) <= Number(localMeta.revision || 0)) {
+    if (shouldSkipSyncPullByRevision(localMeta, remoteMeta)) {
       setSyncSuccess('pull', '远端数据未领先，本地保持不变', {
         lastPullAt: Date.now(),
         lastRemoteRevision: Number(remoteMeta.revision || 0),
@@ -1020,6 +1031,13 @@ function parseExtraCategories(rawValue) {
   return []
 }
 
+function normalizeHostMeta(rawMeta) {
+  return {
+    extra_categories: parseExtraCategories(rawMeta?.extra_categories ?? rawMeta?.extraCategories ?? []),
+    updated_at: Number(rawMeta?.updated_at || rawMeta?.updatedAt || 0),
+  }
+}
+
 function normalizeSnippetStateForRead(payload) {
   const now = Date.now()
   const rawItems = Array.isArray(payload?.items) ? payload.items : []
@@ -1032,6 +1050,12 @@ function normalizeSnippetStateForRead(payload) {
       const updatedAtRaw = Number(item?.updatedAt ?? item?.updated_at ?? createdAtRaw ?? now)
       const createdAt = Number.isFinite(createdAtRaw) && createdAtRaw > 0 ? createdAtRaw : now
       const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? updatedAtRaw : createdAt
+      const reminderDateRaw = String(item?.reminderDate ?? item?.reminder_date ?? '').trim()
+      const reminderDate = /^\d{4}-\d{2}-\d{2}$/.test(reminderDateRaw) ? reminderDateRaw : ''
+      const lastRunAtRaw = Number(item?.lastRunAt ?? item?.last_run_at ?? 0)
+      const lastRunAt = Number.isFinite(lastRunAtRaw) && lastRunAtRaw > 0 ? lastRunAtRaw : 0
+      const lastRunStatusRaw = String(item?.lastRunStatus ?? item?.last_run_status ?? 'idle').trim().toLowerCase()
+      const lastRunStatus = ['success', 'error', 'running'].includes(lastRunStatusRaw) ? lastRunStatusRaw : 'idle'
       return {
         id: String(item?.id || item?.snippetId || uuidv4()),
         name,
@@ -1039,6 +1063,10 @@ function normalizeSnippetStateForRead(payload) {
         hostId: String(item?.hostId ?? item?.host_id ?? '').trim(),
         description: String(item?.description || item?.desc || '').trim(),
         commands,
+        reminderDate,
+        lastRunAt,
+        lastRunStatus,
+        lastRunOutput: String(item?.lastRunOutput ?? item?.last_run_output ?? ''),
         createdAt,
         updatedAt,
       }
@@ -1137,6 +1165,7 @@ class JsonDB {
       revision: 0,
       storage_version: 2,
       hosts: [],
+      host_meta: { extra_categories: [], updated_at: 0 },
       snippets: [],
       snippet_meta: { extra_categories: [], updated_at: 0 },
       vault_meta: null,
@@ -1154,6 +1183,7 @@ class JsonDB {
 
   clearDecryptedData() {
     this.data.hosts = []
+    this.data.host_meta = { extra_categories: [], updated_at: 0 }
     this.data.snippets = []
     this.data.snippet_meta = { extra_categories: [], updated_at: 0 }
     this.data.vault_keys = []
@@ -1186,6 +1216,8 @@ class JsonDB {
       const raw = fs.readFileSync(this.filePath, 'utf8')
       const parsed = JSON.parse(raw)
       this.data = { ...this.data, ...parsed }
+      this.data.host_meta = normalizeHostMeta(this.data.host_meta)
+      this.data.snippet_meta = mergeSnippetMeta(null, this.data.snippet_meta)
       this.data.file_id = String(this.data.file_id || uuidv4())
       this.data.revision = Number(this.data.revision || 0)
       this.data.vault_meta = null
@@ -1240,6 +1272,7 @@ class JsonDB {
           file_id: String(diskParsed.file_id || this.data.file_id || uuidv4()),
           revision: Number(diskParsed.revision || 0),
           hosts: Array.isArray(diskParsed.hosts) ? diskParsed.hosts : [],
+          host_meta: normalizeHostMeta(diskParsed.host_meta),
           snippets: Array.isArray(diskParsed.snippets) ? diskParsed.snippets : [],
           snippet_meta: diskParsed.snippet_meta && typeof diskParsed.snippet_meta === 'object'
             ? diskParsed.snippet_meta
@@ -1397,15 +1430,15 @@ function mergeRowsById(baseRows, incomingRows, getUpdatedAt) {
 }
 
 function mergeSnippetMeta(baseMeta, incomingMeta) {
-  const baseUpdated = Number(baseMeta?.updated_at || 0)
-  const incomingUpdated = Number(incomingMeta?.updated_at || 0)
+  const base = normalizeHostMeta(baseMeta)
+  const incoming = normalizeHostMeta(incomingMeta)
   const mergedCategories = [...new Set([
-    ...(Array.isArray(baseMeta?.extra_categories) ? baseMeta.extra_categories : []),
-    ...(Array.isArray(incomingMeta?.extra_categories) ? incomingMeta.extra_categories : []),
+    ...base.extra_categories,
+    ...incoming.extra_categories,
   ].map((v) => String(v || '').trim()).filter(Boolean))]
   return {
     extra_categories: mergedCategories,
-    updated_at: Math.max(baseUpdated, incomingUpdated),
+    updated_at: Math.max(base.updated_at, incoming.updated_at),
   }
 }
 
@@ -1425,6 +1458,7 @@ function mergeDbData(baseData, incomingData) {
     revision: Math.max(Number(baseData?.revision || 0), Number(incomingData?.revision || 0)),
     storage_version: Math.max(Number(baseData?.storage_version || 1), Number(incomingData?.storage_version || 1), 2),
     hosts: mergeRowsById(baseData?.hosts, incomingData?.hosts, getHostUpdatedAt),
+    host_meta: mergeSnippetMeta(baseData?.host_meta, incomingData?.host_meta),
     snippets: mergeRowsById(baseData?.snippets, incomingData?.snippets, getSnippetUpdatedAt),
     snippet_meta: mergeSnippetMeta(baseData?.snippet_meta, incomingData?.snippet_meta),
     vault_meta: null,
@@ -1641,9 +1675,12 @@ function initDb() {
       host TEXT NOT NULL,
       port INTEGER DEFAULT 22,
       username TEXT NOT NULL,
+      category TEXT DEFAULT '默认',
       auth_type TEXT DEFAULT 'password',
       password TEXT,
       private_key_ref TEXT,
+      purchase_date TEXT,
+      expiry_date TEXT,
       tags TEXT,
       created_at INTEGER,
       updated_at INTEGER
@@ -1683,6 +1720,31 @@ function initDb() {
       updated_at INTEGER
     );
   `)
+
+  ensureHostsTableColumns(db)
+}
+
+function ensureHostsTableColumns(currentDb) {
+  if (!currentDb) return
+  try {
+    const columns = currentDb.prepare('PRAGMA table_info(hosts)').all()
+    const names = new Set(columns.map((item) => String(item?.name || '').toLowerCase()))
+    if (!names.has('category')) currentDb.exec(`ALTER TABLE hosts ADD COLUMN category TEXT DEFAULT '默认'`)
+    if (!names.has('purchase_date')) currentDb.exec(`ALTER TABLE hosts ADD COLUMN purchase_date TEXT`)
+    if (!names.has('expiry_date')) currentDb.exec(`ALTER TABLE hosts ADD COLUMN expiry_date TEXT`)
+  } catch (e) {
+    logMain(`ensureHostsTableColumns failed error=${e?.message || e}`)
+  }
+}
+
+function mapHostRowForRenderer(row) {
+  if (!row || typeof row !== 'object') return row
+  return {
+    ...row,
+    category: String(row.category || '默认'),
+    purchaseDate: String(row.purchaseDate || row.purchase_date || ''),
+    expiryDate: String(row.expiryDate || row.expiry_date || ''),
+  }
 }
 
 function refreshDbFromDisk(reason = 'manual', force = false) {
@@ -2918,9 +2980,11 @@ ipcMain.handle('hosts:list', async () => {
   try {
     refreshDbFromDisk('hosts:list')
     const currentDb = requireDbReady()
-    return { ok: true, items: currentDb.prepare('SELECT * FROM hosts ORDER BY updated_at DESC').all() }
+    const items = currentDb.prepare('SELECT * FROM hosts ORDER BY updated_at DESC').all().map(mapHostRowForRenderer)
+    const extraCategories = normalizeHostMeta(currentDb.data.host_meta).extra_categories
+    return { ok: true, items, extraCategories }
   } catch (e) {
-    return { ok: false, error: e?.message || '数据文件不可用', items: [] }
+    return { ok: false, error: e?.message || '数据文件不可用', items: [], extraCategories: [] }
   }
 })
 
@@ -2930,12 +2994,15 @@ ipcMain.handle('hosts:save', async (_event, payload) => {
     const currentDb = requireDbReady()
     const now = Date.now()
     const id = payload.id || uuidv4()
+    const purchaseDate = String(payload.purchaseDate || payload.purchase_date || '').trim()
+    const expiryDate = String(payload.expiryDate || payload.expiry_date || '').trim()
     currentDb.prepare(`
-    INSERT INTO hosts (id, name, host, port, username, auth_type, password, private_key_ref, tags, created_at, updated_at)
-    VALUES (@id, @name, @host, @port, @username, @auth_type, @password, @private_key_ref, @tags, @created_at, @updated_at)
+    INSERT INTO hosts (id, name, host, port, username, category, auth_type, password, private_key_ref, purchase_date, expiry_date, tags, created_at, updated_at)
+    VALUES (@id, @name, @host, @port, @username, @category, @auth_type, @password, @private_key_ref, @purchase_date, @expiry_date, @tags, @created_at, @updated_at)
     ON CONFLICT(id) DO UPDATE SET
       name=excluded.name,host=excluded.host,port=excluded.port,username=excluded.username,
-      auth_type=excluded.auth_type,password=excluded.password,private_key_ref=excluded.private_key_ref,
+      category=excluded.category,auth_type=excluded.auth_type,password=excluded.password,private_key_ref=excluded.private_key_ref,
+      purchase_date=excluded.purchase_date,expiry_date=excluded.expiry_date,
       tags=excluded.tags,updated_at=excluded.updated_at
     `).run({
       id,
@@ -2943,10 +3010,14 @@ ipcMain.handle('hosts:save', async (_event, payload) => {
       host: payload.host,
       port: Number(payload.port || 22),
       username: payload.username,
+      category: payload.category || '默认',
       auth_type: payload.authType || 'password',
       password: payload.password || null,
       private_key_ref: payload.privateKeyRef || null,
-      category: payload.category || '默认',
+      purchase_date: purchaseDate || null,
+      expiry_date: expiryDate || null,
+      purchaseDate: purchaseDate || '',
+      expiryDate: expiryDate || '',
       tags: JSON.stringify(payload.tags || []),
       created_at: now,
       updated_at: now,
@@ -2965,6 +3036,21 @@ ipcMain.handle('hosts:delete', async (_event, payload) => {
     return { ok: true }
   } catch (e) {
     return { ok: false, error: e?.message || '删除主机失败' }
+  }
+})
+
+ipcMain.handle('hosts:set-categories', async (_event, payload) => {
+  try {
+    refreshDbFromDisk('hosts:set-categories', true)
+    const currentDb = requireDbReady()
+    currentDb.data.host_meta = {
+      extra_categories: parseExtraCategories(payload?.extraCategories ?? payload?.extra_categories ?? []),
+      updated_at: Date.now(),
+    }
+    currentDb.save()
+    return { ok: true, extraCategories: currentDb.data.host_meta.extra_categories }
+  } catch (e) {
+    return { ok: false, error: e?.message || '保存主机分类失败', extraCategories: [] }
   }
 })
 
@@ -3221,6 +3307,21 @@ ipcMain.handle('vault:key-get', async (_event, payload) => {
     }
   } catch (e) {
     return { ok: false, error: e?.message || '读取密钥失败' }
+  }
+})
+
+ipcMain.handle('vault:key-delete', async (_event, payload) => {
+  try {
+    refreshDbFromDisk('vault:key-delete', true)
+    const currentDb = requireDbReady()
+    const targetId = String(payload?.id || '').trim()
+    if (!targetId) return { ok: false, error: '密钥 ID 不能为空' }
+    const result = currentDb.prepare('DELETE FROM vault_keys WHERE id = ?').run(targetId)
+    if (!result?.changes) return { ok: false, error: '密钥不存在' }
+    currentDb.save()
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e?.message || '删除密钥失败' }
   }
 })
 

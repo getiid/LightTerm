@@ -3,14 +3,14 @@ import type { Ref } from 'vue'
 
 const DEFAULT_CATEGORY = '默认'
 
-const createEmptyHostEditor = () => ({
+const createEmptyHostEditor = (category = DEFAULT_CATEGORY) => ({
   id: '',
   name: '',
   host: '',
   port: 22,
   username: 'root',
   password: '',
-  category: DEFAULT_CATEGORY,
+  category,
   authType: 'password',
   privateKeyRef: '',
   purchaseDate: '',
@@ -24,6 +24,9 @@ export function useHostCrud(params: {
   hostItems: Ref<any[]>
   hostName: Ref<string>
   hostCategory: Ref<string>
+  selectedCategory: Ref<string>
+  defaultCategory: string
+  allCategory: string
   authType: Ref<'password' | 'key'>
   selectedKeyRef: Ref<string>
   sshStatus: Ref<string>
@@ -41,6 +44,9 @@ export function useHostCrud(params: {
     hostItems,
     hostName,
     hostCategory,
+    selectedCategory,
+    defaultCategory,
+    allCategory,
     authType,
     selectedKeyRef,
     sshStatus,
@@ -131,7 +137,10 @@ export function useHostCrud(params: {
     selectedHostId.value = ''
     hostEditorVisible.value = true
     editPasswordVisible.value = false
-    editingHost.value = createEmptyHostEditor()
+    const nextCategory = selectedCategory.value === allCategory
+      ? defaultCategory
+      : (selectedCategory.value || defaultCategory)
+    editingHost.value = createEmptyHostEditor(nextCategory)
   }
 
   const openHostTerminal = async (h: any) => {

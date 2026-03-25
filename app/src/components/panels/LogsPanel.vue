@@ -46,12 +46,12 @@ const { vm } = defineProps<{ vm: any }>()
       </aside>
       <div class="logs-list">
         <article v-for="item in vm.currentAuditLogs.value" :key="item.id" class="log-item">
-          <header>
+          <header class="log-header-line">
             <span class="log-time">{{ vm.formatAuditTime(item.ts) }}</span>
             <span class="pill">{{ vm.formatAuditSource(item.source) }}</span>
             <span class="pill ghost">{{ vm.formatAuditAction(item.action) }}</span>
+            <span class="log-target-inline">{{ item.target || '未命名目标' }}</span>
           </header>
-          <div class="log-target">{{ item.target || '未命名目标' }}</div>
           <pre>{{ item.content || '-' }}</pre>
         </article>
         <div v-if="vm.currentAuditLogs.value.length === 0" class="file-row empty">请选择左侧目标查看详情</div>

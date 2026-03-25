@@ -1,6 +1,8 @@
 import { ref } from 'vue'
 
 export function useSftpPanels() {
+  type SortKey = 'name' | 'modifiedAt' | 'size' | 'kind'
+  type SortDirection = 'asc' | 'desc'
   const sftpPath = ref('.')
   const sftpRows = ref<any[]>([])
   const sftpStatus = ref('')
@@ -31,8 +33,10 @@ export function useSftpPanels() {
   const rightLocalRows = ref<any[]>([])
   const leftFileKeyword = ref('')
   const rightFileKeyword = ref('')
-  const localSortBy = ref<'name' | 'createdAt' | 'modifiedAt'>('name')
-  const remoteSortBy = ref<'name' | 'createdAt' | 'modifiedAt'>('name')
+  const localSortBy = ref<SortKey>('name')
+  const localSortDirection = ref<SortDirection>('asc')
+  const remoteSortBy = ref<SortKey>('name')
+  const remoteSortDirection = ref<SortDirection>('asc')
 
   return {
     sftpPath,
@@ -66,6 +70,8 @@ export function useSftpPanels() {
     leftFileKeyword,
     rightFileKeyword,
     localSortBy,
+    localSortDirection,
     remoteSortBy,
+    remoteSortDirection,
   }
 }

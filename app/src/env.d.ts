@@ -31,9 +31,10 @@ declare global {
       onUpdateStatus: (handler: (data: { status?: string; message?: string; currentVersion?: string; latestVersion?: string; source?: string; hasUpdate?: boolean; downloaded?: boolean; checking?: boolean; downloading?: boolean; progress?: number; downloadUrl?: string; releaseUrl?: string }) => void) => void
       onStorageDataChanged: (handler: (data: { changedAt?: number }) => void) => void
 
-      hostsList: () => Promise<{ ok: boolean; items?: any[] }>
+      hostsList: () => Promise<{ ok: boolean; items?: any[]; extraCategories?: string[]; error?: string }>
       hostsSave: (payload: any) => Promise<{ ok: boolean; id?: string; error?: string }>
       hostsDelete: (payload: { id: string }) => Promise<{ ok: boolean; error?: string }>
+      hostsSetCategories: (payload: { extraCategories: string[] }) => Promise<{ ok: boolean; extraCategories?: string[]; error?: string }>
       snippetsGetState: () => Promise<{ ok: boolean; items?: any[]; extraCategories?: string[]; error?: string }>
       snippetsSetState: (payload: { items: any[]; extraCategories: string[] }) => Promise<{ ok: boolean; items?: any[]; extraCategories?: string[]; error?: string }>
       quicktoolsGetState: () => Promise<{ ok: boolean; items?: any[]; error?: string }>
@@ -46,6 +47,7 @@ declare global {
       vaultKeyList: () => Promise<{ ok: boolean; items?: any[]; error?: string }>
       vaultKeySave: (payload: { id?: string; name: string; type?: string; fingerprint?: string; privateKey: string; publicKey?: string; certificate?: string }) => Promise<{ ok: boolean; id?: string; detectedType?: string; error?: string }>
       vaultKeyGet: (payload: { id: string }) => Promise<{ ok: boolean; item?: any; error?: string }>
+      vaultKeyDelete: (payload: { id: string }) => Promise<{ ok: boolean; error?: string }>
       vaultKeyImportFile: () => Promise<{ ok: boolean; content?: string; detectedType?: string; filePath?: string; raw?: string; error?: string }>
 
       syncLogin: (payload: { provider?: string; userId?: string; token?: string }) => Promise<{ ok: boolean; error?: string }>
@@ -86,7 +88,10 @@ declare global {
       onLocalError: (handler: (data: { sessionId: string; error: string }) => void) => void
 
       sshTest: (config: SSHConfig) => Promise<{ ok: boolean; error?: string }>
+      sshList: () => Promise<{ ok: boolean; items?: Array<{ sessionId: string; target?: string }>; error?: string }>
       sshConnect: (config: SSHConfig & { sessionId: string; displayName?: string }) => Promise<{ ok: boolean; error?: string }>
+      sshExecScript: (payload: SSHConfig & { script: string; timeoutMs?: number }) => Promise<{ ok: boolean; code?: number; stdout?: string; stderr?: string; error?: string }>
+      sshMetrics: (payload: { sessionId: string }) => Promise<{ ok: boolean; supported?: boolean; metrics?: { cpuPercent?: number | null; memoryPercent?: number | null; diskPercent?: number | null; memoryUsedKb?: number; memoryTotalKb?: number; diskUsedKb?: number; diskTotalKb?: number; rxBytesPerSec?: number; txBytesPerSec?: number } | null; error?: string }>
       sshWrite: (payload: { sessionId: string; data: string }) => Promise<{ ok: boolean; error?: string }>
       sshResize: (payload: { sessionId: string; cols: number; rows: number }) => Promise<{ ok: boolean; error?: string }>
       sshDisconnect: (payload: { sessionId: string }) => Promise<{ ok: boolean; error?: string }>

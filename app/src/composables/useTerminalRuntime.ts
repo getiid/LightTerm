@@ -14,7 +14,6 @@ type UseTerminalRuntimeParams = {
   sshTabs: Ref<Array<{ id: string; name: string; connected: boolean }>>
   getSshBuffer: (sessionId: string) => string
   appendSshBuffer: (sessionId: string, text: string) => void
-  clearSessionDecoders: (sessionId: string) => void
   saveSshTabs: () => void
   clearSessionRestoreState: () => void
   serialConnected: Ref<boolean>
@@ -27,6 +26,7 @@ type UseTerminalRuntimeParams = {
   appendLocalData: (sessionId: string, text: string) => void
   handleLocalClose: (sessionId: string, code: number) => void
   handleLocalError: (sessionId: string, error: string) => void
+  renderActiveLocalSession: () => Promise<void>
   snippetsLoaded: Ref<boolean>
   restoreSnippets: () => Promise<void>
   terminalEncodingStorageKey: string
@@ -42,7 +42,6 @@ export function useTerminalRuntime(params: UseTerminalRuntimeParams) {
     sshTabs,
     getSshBuffer,
     appendSshBuffer,
-    clearSessionDecoders,
     saveSshTabs,
     clearSessionRestoreState,
     serialConnected,
@@ -55,6 +54,7 @@ export function useTerminalRuntime(params: UseTerminalRuntimeParams) {
     appendLocalData,
     handleLocalClose,
     handleLocalError,
+    renderActiveLocalSession,
     snippetsLoaded,
     restoreSnippets,
     terminalEncodingStorageKey,
@@ -95,6 +95,14 @@ export function useTerminalRuntime(params: UseTerminalRuntimeParams) {
     const decoder = new TextDecoder(terminalEncoding.value)
     terminalDecoders.set(key, decoder)
     return decoder
+  }
+
+  const clearSessionDecoders = (sessionId: string) => {
+    if (!sessionId) return
+    const prefixes = [`${sessionId}::`]
+    Array.from(terminalDecoders.keys()).forEach((key) => {
+      if (prefixes.some((prefix) => key.startsWith(prefix))) terminalDecoders.delete(key)
+    })
   }
 
   const decodeBase64Bytes = (base64: string) => {
@@ -157,6 +165,8 @@ export function useTerminalRuntime(params: UseTerminalRuntimeParams) {
     if (!terminal) return
     const techMode = activeTerminalMode.value !== 'ssh'
     if (techMode) {
+      termEl.value?.style?.setProperty('--terminal-surface-bg', '#07101d')
+      termEl.value?.style?.setProperty('--terminal-mask-bg', '#07101d')
       terminal.options.theme = {
         background: '#07101d',
         foreground: '#d9e7ff',
@@ -170,12 +180,14 @@ export function useTerminalRuntime(params: UseTerminalRuntimeParams) {
       terminal.options.lineHeight = 1.24
       return
     }
+    termEl.value?.style?.setProperty('--terminal-surface-bg', '#07101d')
+    termEl.value?.style?.setProperty('--terminal-mask-bg', '#07101d')
     terminal.options.theme = {
-      background: '#f8fafc',
-      foreground: '#111827',
-      cursor: '#2563eb',
-      selectionBackground: '#2563ebc0',
-      selectionInactiveBackground: '#60a5fa88',
+      background: '#07101d',
+      foreground: '#d9e7ff',
+      cursor: '#60a5fa',
+      selectionBackground: '#2563eb80',
+      selectionInactiveBackground: '#1d4ed880',
     }
     terminal.options.fontFamily = terminalFontStackLight
     terminal.options.fontSize = 13
@@ -230,11 +242,11 @@ export function useTerminalRuntime(params: UseTerminalRuntimeParams) {
       lineHeight: 1.2,
       rightClickSelectsWord: true,
       theme: {
-        background: '#f8fafc',
-        foreground: '#111827',
-        cursor: '#2563eb',
-        selectionBackground: '#2563ebc0',
-        selectionInactiveBackground: '#60a5fa88',
+        background: '#07101d',
+        foreground: '#d9e7ff',
+        cursor: '#60a5fa',
+        selectionBackground: '#2563eb80',
+        selectionInactiveBackground: '#1d4ed880',
       },
     })
     fitAddon = new FitAddon()
@@ -243,6 +255,13 @@ export function useTerminalRuntime(params: UseTerminalRuntimeParams) {
     fitAddon.fit()
     terminal.focus()
     applyTerminalTheme()
+    if (focusTerminal.value) {
+      if (activeTerminalMode.value === 'ssh') {
+        renderActiveSshBuffer()
+      } else if (activeTerminalMode.value === 'local') {
+        void renderActiveLocalSession()
+      }
+    }
     termEl.value.addEventListener('click', () => terminal?.focus())
 
     terminal.onData((data) => {
@@ -316,7 +335,13 @@ export function useTerminalRuntime(params: UseTerminalRuntimeParams) {
     nextTick(() => {
       initTerminal()
       fitAddon?.fit()
-      if (value) terminal?.focus()
+      if (!value) return
+      if (activeTerminalMode.value === 'ssh') {
+        renderActiveSshBuffer()
+      } else if (activeTerminalMode.value === 'local') {
+        void renderActiveLocalSession()
+      }
+      terminal?.focus()
     })
   })
 
@@ -325,7 +350,13 @@ export function useTerminalRuntime(params: UseTerminalRuntimeParams) {
       initTerminal()
       applyTerminalTheme()
       fitAddon?.fit()
-      if (focusTerminal.value) terminal?.focus()
+      if (!focusTerminal.value) return
+      if (activeTerminalMode.value === 'ssh') {
+        renderActiveSshBuffer()
+      } else if (activeTerminalMode.value === 'local') {
+        void renderActiveLocalSession()
+      }
+      terminal?.focus()
     })
   })
 

@@ -1,151 +1,302 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue'
+import {
+  ArrowUp,
+  FolderPlus,
+  HardDrive,
+  Link2,
+  RefreshCw,
+  Search,
+  Server,
+} from 'lucide-vue-next'
+
 const { vm } = defineProps<{ vm: any }>()
+
+const leftPathDraft = ref('')
+const rightPathDraft = ref('')
+
+watch(
+  [() => vm.leftPanelMode.value, () => vm.localPath.value, () => vm.leftSftpPath.value],
+  () => {
+    leftPathDraft.value = vm.leftPanelMode.value === 'local'
+      ? String(vm.localPath.value || '')
+      : String(vm.leftSftpPath.value || '.')
+  },
+  { immediate: true },
+)
+
+watch(
+  [() => vm.rightPanelMode.value, () => vm.rightLocalPath.value, () => vm.sftpPath.value],
+  () => {
+    rightPathDraft.value = vm.rightPanelMode.value === 'local'
+      ? String(vm.rightLocalPath.value || '')
+      : String(vm.sftpPath.value || '.')
+  },
+  { immediate: true },
+)
+
+const formatFileSize = (value: unknown) => {
+  const size = Number(value || 0)
+  if (!Number.isFinite(size) || size <= 0) return '文件'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let current = size
+  let index = 0
+  while (current >= 1024 && index < units.length - 1) {
+    current /= 1024
+    index += 1
+  }
+  return `${current >= 100 || index === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[index]}`
+}
+
+const fileKindLabel = (item: any) => (item?.isDir ? '目录' : '文件')
+
+const toggleLeftSort = (key: 'name' | 'modifiedAt' | 'size' | 'kind') => {
+  if (vm.localSortBy.value === key) {
+    vm.localSortDirection.value = vm.localSortDirection.value === 'asc' ? 'desc' : 'asc'
+    return
+  }
+  vm.localSortBy.value = key
+  vm.localSortDirection.value = key === 'name' || key === 'kind' ? 'asc' : 'desc'
+}
+
+const toggleRightSort = (key: 'name' | 'modifiedAt' | 'size' | 'kind') => {
+  if (vm.remoteSortBy.value === key) {
+    vm.remoteSortDirection.value = vm.remoteSortDirection.value === 'asc' ? 'desc' : 'asc'
+    return
+  }
+  vm.remoteSortBy.value = key
+  vm.remoteSortDirection.value = key === 'name' || key === 'kind' ? 'asc' : 'desc'
+}
+
+const jumpLeftPath = async () => {
+  const nextPath = String(leftPathDraft.value || '').trim()
+  if (vm.leftPanelMode.value === 'local') {
+    vm.localPath.value = nextPath
+    await vm.loadLocalFs()
+    return
+  }
+  vm.leftSftpPath.value = nextPath || '.'
+  await vm.loadLeftSftp()
+}
+
+const jumpRightPath = async () => {
+  const nextPath = String(rightPathDraft.value || '').trim()
+  if (vm.rightPanelMode.value === 'local') {
+    vm.rightLocalPath.value = nextPath
+    await vm.loadRightLocalFs()
+    return
+  }
+  vm.sftpPath.value = nextPath || '.'
+  await vm.loadSftp()
+}
 </script>
 
 <template>
   <section class="panel sftp-panel">
-    <h3>SFTP 文件传输</h3>
-    <div class="sftp-status-line">
-      <span class="status-pill" :class="{ online: vm.sftpConnected.value }">{{ vm.sftpConnected.value ? '已连接' : '未连接' }}</span>
-      <span class="status-pill mode">{{ vm.sftpTransferModeLabel.value }}</span>
-      <span class="status-pill plain">{{ vm.sftpStatus.value || '就绪' }}</span>
-    </div>
-    <div class="split-head">
-      <div class="head-left">
-        <article class="path-chip">
-          <header>
-            <b>左侧连接</b>
-            <em>{{ vm.leftPanelStateLabel.value }}</em>
-          </header>
-          <span>{{ vm.leftLinkLabel.value }}</span>
-          <small>{{ vm.leftPanelMode.value === 'local' ? vm.leftLocalPathDisplay.value : vm.leftSftpPath.value }}</small>
-          <i>共 {{ vm.leftDisplayRows.value.length }} 项</i>
-        </article>
-        <article class="path-chip">
-          <header>
-            <b>右侧连接</b>
-            <em>{{ vm.rightPanelStateLabel.value }}</em>
-          </header>
-          <span>{{ vm.rightLinkLabel.value }}</span>
-          <small>{{ vm.rightPanelMode.value === 'local' ? vm.rightLocalPathDisplay.value : vm.sftpPath.value }}</small>
-          <i>共 {{ vm.rightDisplayRows.value.length }} 项</i>
-        </article>
-      </div>
-    </div>
-
-    <div class="split">
-      <div class="file-panel local-panel" @dragover.prevent @drop="vm.onLeftDrop">
-        <div class="file-panel-head">
-          <h4>{{ vm.leftPanelMode.value === 'local' ? '左侧：本地（可接收远程拖拽下载）' : '左侧：远程浏览' }}</h4>
-          <div class="file-head-actions">
-            <button class="ghost small" @click="vm.localGoUp">上一级</button>
-            <button class="ghost small" @click="vm.leftPanelMode.value === 'local' ? vm.loadLocalFs() : vm.loadLeftSftp()">刷新</button>
-            <button class="ghost small" @click="vm.toggleLeftConnectPanel">链接</button>
-            <select v-model="vm.localSortBy.value" class="file-sort">
-              <option value="name">A-Z 排序</option>
-              <option value="createdAt">创建时间</option>
-              <option value="modifiedAt">修改时间</option>
-            </select>
-          </div>
+    <div class="sftp-shell">
+      <div class="sftp-compact-bar">
+        <div class="sftp-compact-title">
+          <span>SFTP</span>
+          <small>{{ vm.sftpTransferModeLabel.value }}</small>
         </div>
-        <div v-if="vm.leftConnectPanelOpen.value" class="connect-inline">
-          <div class="connect-filters">
-            <select v-model="vm.leftConnectCategory.value">
-              <option :value="vm.allCategory">全部分类</option>
-              <option v-for="c in vm.hostCategories.value" :key="`left-cat-${c}`" :value="c">{{ c }}</option>
-            </select>
-            <input v-model="vm.leftConnectKeyword.value" placeholder="搜索服务器/IP/用户名" />
-          </div>
-          <select v-model="vm.leftConnectTarget.value">
-            <option value="local">本地目录</option>
-            <optgroup v-for="group in vm.leftConnectGroups.value" :key="`left-group-${group.category}`" :label="group.category">
-              <option v-for="h in group.items" :key="h.id" :value="h.id">{{ h.name }} ({{ h.host }})</option>
-            </optgroup>
-          </select>
-          <button @click="vm.connectLeftPanel">切换左侧</button>
-        </div>
-        <div class="file-search-row">
-          <input v-model="vm.leftFileKeyword.value" placeholder="筛选当前左侧文件列表" />
-        </div>
-        <div class="file-stack">
-          <div
-            v-for="l in vm.leftDisplayRows.value"
-            :key="vm.leftPanelMode.value === 'local' ? l.path : l.filename"
-            class="file-row"
-            :class="{ 'is-dir': l.isDir, active: vm.leftPanelMode.value === 'local' ? vm.selectedLocalFile.value === l.path : vm.selectedRemoteFile.value === l.filename }"
-            :draggable="vm.leftPanelMode.value === 'local' && !l.isDir"
-            @click="vm.openLeftItem(l)"
-            @dragstart="vm.onLeftDragStart(l)"
-          >
-            <div class="file-info">
-              <span class="file-icon">{{ l.isDir ? '📁' : '📄' }}</span>
-              <span class="file-name">{{ vm.leftPanelMode.value === 'local' ? l.name : l.filename }}</span>
-            </div>
-            <div class="file-meta">
-              <span>{{ l.isDir ? '目录' : (vm.leftPanelMode.value === 'local' ? '文件' : (l.size ?? '-')) }}</span>
-              <span>{{ vm.formatFsTime(vm.leftPanelMode.value === 'local' ? l.modifiedAt : (l.modifiedAt || l.mtime)) }}</span>
-            </div>
-          </div>
-          <div v-if="vm.leftDisplayRows.value.length === 0" class="file-row empty">目录空</div>
+        <div class="sftp-compact-status">
+          <span class="status-pill" :class="{ online: vm.sftpConnected.value }">
+            {{ vm.sftpConnected.value ? '远端在线' : '远端未连接' }}
+          </span>
+          <span class="status-pill plain">{{ vm.sftpStatus.value || '就绪' }}</span>
         </div>
       </div>
 
-      <div class="file-panel remote-panel" @dragover.prevent @drop="vm.onRightDrop">
-        <div class="file-panel-head">
-          <h4>{{ vm.rightPanelMode.value === 'remote' ? '右侧：远程（可接收本地拖拽上传）' : '右侧：本地目录' }}</h4>
-          <div class="file-head-actions">
-            <button class="ghost small" @click="vm.remoteGoUp">上一级</button>
-            <button class="ghost small" @click="vm.loadSftp">刷新</button>
-            <button v-if="vm.rightPanelMode.value === 'remote'" class="ghost small" @click="vm.promptMkdirSftp">新建目录</button>
-            <button class="ghost small" @click="vm.toggleRightConnectPanel">链接</button>
-            <select v-model="vm.remoteSortBy.value" class="file-sort">
-              <option value="name">A-Z 排序</option>
-              <option value="createdAt">创建时间</option>
-              <option value="modifiedAt">修改时间</option>
-            </select>
-          </div>
-        </div>
-        <div v-if="vm.rightConnectPanelOpen.value" class="connect-inline">
-          <div class="connect-filters">
-            <select v-model="vm.rightConnectCategory.value">
-              <option :value="vm.allCategory">全部分类</option>
-              <option v-for="c in vm.hostCategories.value" :key="`right-cat-${c}`" :value="c">{{ c }}</option>
-            </select>
-            <input v-model="vm.rightConnectKeyword.value" placeholder="搜索服务器/IP/用户名" />
-          </div>
-          <select v-model="vm.rightConnectTarget.value">
-            <option value="local">本地目录</option>
-            <optgroup v-for="group in vm.rightConnectGroups.value" :key="`right-group-${group.category}`" :label="group.category">
-              <option v-for="h in group.items" :key="h.id" :value="h.id">{{ h.name }} ({{ h.host }})</option>
-            </optgroup>
-          </select>
-          <button @click="vm.connectSftp">切换右侧</button>
-        </div>
-        <div class="file-search-row">
-          <input v-model="vm.rightFileKeyword.value" placeholder="筛选当前右侧文件列表" />
-        </div>
-        <div class="file-stack">
-          <div
-            v-for="r in vm.rightDisplayRows.value"
-            :key="vm.rightPanelMode.value === 'remote' ? r.filename : r.path"
-            class="file-row"
-            :class="{ 'is-dir': r.isDir, active: vm.rightPanelMode.value === 'remote' ? vm.selectedRemoteFile.value === r.filename : vm.selectedLocalFile.value === r.path }"
-            :draggable="!r.isDir"
-            @click="vm.openRightItem(r)"
-            @contextmenu="vm.rightPanelMode.value === 'remote' ? vm.showRemoteMenu($event, r) : undefined"
-            @dragstart="vm.onRightDragStart(r)"
-          >
-            <div class="file-info">
-              <span class="file-icon">{{ r.isDir ? '📁' : '📄' }}</span>
-              <span class="file-name">{{ vm.rightPanelMode.value === 'remote' ? r.filename : r.name }}</span>
+      <div class="sftp-workspace">
+        <section class="sftp-pane sftp-pane-left" @dragover.prevent @drop="vm.onLeftDrop">
+          <header class="sftp-pane-head">
+            <div class="sftp-pane-heading">
+              <span class="sftp-pane-icon local"><HardDrive :size="16" /></span>
+              <div class="sftp-pane-copy">
+                <h4>{{ vm.leftPanelMode.value === 'local' ? '本地目录' : '远程浏览' }}</h4>
+              </div>
             </div>
-            <div class="file-meta">
-              <span>{{ r.isDir ? '目录' : (vm.rightPanelMode.value === 'remote' ? (r.size ?? '-') : '文件') }}</span>
-              <span>{{ r.isDir ? '' : vm.formatFsTime(vm.rightPanelMode.value === 'remote' ? (r.modifiedAt || r.mtime) : r.modifiedAt) }}</span>
+            <div class="sftp-pane-actions">
+              <button class="ghost small sftp-action-btn" @click="vm.localGoUp">
+                <ArrowUp :size="13" /> 上一级
+              </button>
+              <button class="ghost small sftp-action-btn" @click="vm.leftPanelMode.value === 'local' ? vm.loadLocalFs() : vm.loadLeftSftp()">
+                <RefreshCw :size="13" /> 刷新
+              </button>
+              <button class="ghost small sftp-action-btn" @click="vm.toggleLeftConnectPanel">
+                <Link2 :size="13" /> 连接
+              </button>
+            </div>
+          </header>
+
+          <div class="sftp-toolbar-row">
+            <label class="sftp-path-input">
+              <span class="sftp-path-label">路径</span>
+              <input
+                v-model="leftPathDraft"
+                placeholder="输入路径后回车"
+                @keyup.enter="jumpLeftPath"
+              />
+            </label>
+            <label class="sftp-search compact">
+              <Search :size="13" />
+              <input v-model="vm.leftFileKeyword.value" placeholder="搜索" />
+            </label>
+          </div>
+
+          <div v-if="vm.leftConnectPanelOpen.value" class="sftp-connect-card">
+            <div class="sftp-connect-head">
+              <strong>切换左侧连接</strong>
+              <span>选择本地目录或某台服务器</span>
+            </div>
+            <div class="connect-inline sftp-connect-inline">
+              <div class="connect-filters">
+                <select v-model="vm.leftConnectCategory.value">
+                  <option :value="vm.allCategory">全部分类</option>
+                  <option v-for="c in vm.hostCategories.value" :key="`left-cat-${c}`" :value="c">{{ c }}</option>
+                </select>
+                <input v-model="vm.leftConnectKeyword.value" placeholder="搜索服务器/IP/用户名" />
+              </div>
+              <select v-model="vm.leftConnectTarget.value">
+                <option value="local">本地目录</option>
+                <optgroup v-for="group in vm.leftConnectGroups.value" :key="`left-group-${group.category}`" :label="group.category">
+                  <option v-for="h in group.items" :key="h.id" :value="h.id">{{ h.name }} ({{ h.host }})</option>
+                </optgroup>
+              </select>
+              <button @click="vm.connectLeftPanel">应用</button>
             </div>
           </div>
-          <div v-if="vm.rightDisplayRows.value.length === 0" class="file-row empty">目录空</div>
-        </div>
+
+          <div class="sftp-file-list">
+            <div class="sftp-file-header">
+              <button class="sftp-file-col name" :class="{ active: vm.localSortBy.value === 'name' }" @click="toggleLeftSort('name')">名字</button>
+              <button class="sftp-file-col" :class="{ active: vm.localSortBy.value === 'modifiedAt' }" @click="toggleLeftSort('modifiedAt')">修改日期</button>
+              <button class="sftp-file-col size" :class="{ active: vm.localSortBy.value === 'size' }" @click="toggleLeftSort('size')">尺寸</button>
+              <button class="sftp-file-col kind" :class="{ active: vm.localSortBy.value === 'kind' }" @click="toggleLeftSort('kind')">属性</button>
+            </div>
+            <div
+              v-for="l in vm.leftDisplayRows.value"
+              :key="vm.leftPanelMode.value === 'local' ? l.path : l.filename"
+              class="sftp-file-row"
+              :class="{ 'is-dir': l.isDir, active: vm.leftPanelMode.value === 'local' ? vm.selectedLocalFile.value === l.path : vm.selectedRemoteFile.value === l.filename }"
+              :draggable="vm.leftPanelMode.value === 'local' && !l.isDir"
+              @click="vm.openLeftItem(l)"
+              @dragstart="vm.onLeftDragStart(l)"
+            >
+              <div class="sftp-file-main name">
+                <span class="sftp-file-icon">{{ l.isDir ? '📁' : '📄' }}</span>
+                <div class="sftp-file-copy">
+                  <strong>{{ vm.leftPanelMode.value === 'local' ? l.name : l.filename }}</strong>
+                </div>
+              </div>
+              <div class="sftp-file-meta">
+                <span>{{ vm.formatFsTime(vm.leftPanelMode.value === 'local' ? l.modifiedAt : (l.modifiedAt || l.mtime)) }}</span>
+              </div>
+              <div class="sftp-file-size">{{ l.isDir ? '—' : formatFileSize(l.size) }}</div>
+              <div class="sftp-file-kind">{{ fileKindLabel(l) }}</div>
+            </div>
+            <div v-if="vm.leftDisplayRows.value.length === 0" class="sftp-file-empty">
+              当前左侧目录为空
+            </div>
+          </div>
+        </section>
+
+        <section class="sftp-pane sftp-pane-right" @dragover.prevent @drop="vm.onRightDrop">
+          <header class="sftp-pane-head">
+            <div class="sftp-pane-heading">
+              <span class="sftp-pane-icon remote"><Server :size="16" /></span>
+              <div class="sftp-pane-copy">
+                <h4>{{ vm.rightPanelMode.value === 'remote' ? '远程目录' : '本地目录' }}</h4>
+              </div>
+            </div>
+            <div class="sftp-pane-actions">
+              <button class="ghost small sftp-action-btn" @click="vm.remoteGoUp">
+                <ArrowUp :size="13" /> 上一级
+              </button>
+              <button class="ghost small sftp-action-btn" @click="vm.loadSftp">
+                <RefreshCw :size="13" /> 刷新
+              </button>
+              <button v-if="vm.rightPanelMode.value === 'remote'" class="ghost small sftp-action-btn" @click="vm.promptMkdirSftp">
+                <FolderPlus :size="13" /> 新建
+              </button>
+              <button class="ghost small sftp-action-btn" @click="vm.toggleRightConnectPanel">
+                <Link2 :size="13" /> 连接
+              </button>
+            </div>
+          </header>
+
+          <div class="sftp-toolbar-row">
+            <label class="sftp-path-input accent">
+              <span class="sftp-path-label">路径</span>
+              <input
+                v-model="rightPathDraft"
+                placeholder="输入路径后回车"
+                @keyup.enter="jumpRightPath"
+              />
+            </label>
+            <label class="sftp-search compact">
+              <Search :size="13" />
+              <input v-model="vm.rightFileKeyword.value" placeholder="搜索" />
+            </label>
+          </div>
+
+          <div v-if="vm.rightConnectPanelOpen.value" class="sftp-connect-card accent">
+            <div class="sftp-connect-head">
+              <strong>切换右侧连接</strong>
+              <span>通常用来挂载远程目录或本地目录</span>
+            </div>
+            <div class="connect-inline sftp-connect-inline">
+              <div class="connect-filters">
+                <select v-model="vm.rightConnectCategory.value">
+                  <option :value="vm.allCategory">全部分类</option>
+                  <option v-for="c in vm.hostCategories.value" :key="`right-cat-${c}`" :value="c">{{ c }}</option>
+                </select>
+                <input v-model="vm.rightConnectKeyword.value" placeholder="搜索服务器/IP/用户名" />
+              </div>
+              <select v-model="vm.rightConnectTarget.value">
+                <option value="local">本地目录</option>
+                <optgroup v-for="group in vm.rightConnectGroups.value" :key="`right-group-${group.category}`" :label="group.category">
+                  <option v-for="h in group.items" :key="h.id" :value="h.id">{{ h.name }} ({{ h.host }})</option>
+                </optgroup>
+              </select>
+              <button @click="vm.connectSftp">应用</button>
+            </div>
+          </div>
+
+          <div class="sftp-file-list">
+            <div class="sftp-file-header">
+              <button class="sftp-file-col name" :class="{ active: vm.remoteSortBy.value === 'name' }" @click="toggleRightSort('name')">名字</button>
+              <button class="sftp-file-col" :class="{ active: vm.remoteSortBy.value === 'modifiedAt' }" @click="toggleRightSort('modifiedAt')">修改日期</button>
+              <button class="sftp-file-col size" :class="{ active: vm.remoteSortBy.value === 'size' }" @click="toggleRightSort('size')">尺寸</button>
+              <button class="sftp-file-col kind" :class="{ active: vm.remoteSortBy.value === 'kind' }" @click="toggleRightSort('kind')">属性</button>
+            </div>
+            <div
+              v-for="r in vm.rightDisplayRows.value"
+              :key="vm.rightPanelMode.value === 'remote' ? r.filename : r.path"
+              class="sftp-file-row"
+              :class="{ 'is-dir': r.isDir, active: vm.rightPanelMode.value === 'remote' ? vm.selectedRemoteFile.value === r.filename : vm.selectedLocalFile.value === r.path }"
+              :draggable="!r.isDir"
+              @click="vm.openRightItem(r)"
+              @contextmenu="vm.rightPanelMode.value === 'remote' ? vm.showRemoteMenu($event, r) : undefined"
+              @dragstart="vm.onRightDragStart(r)"
+            >
+              <div class="sftp-file-main name">
+                <span class="sftp-file-icon">{{ r.isDir ? '📁' : '📄' }}</span>
+                <div class="sftp-file-copy">
+                  <strong>{{ vm.rightPanelMode.value === 'remote' ? r.filename : r.name }}</strong>
+                </div>
+              </div>
+              <div class="sftp-file-meta">
+                <span>{{ r.isDir ? '—' : vm.formatFsTime(vm.rightPanelMode.value === 'remote' ? (r.modifiedAt || r.mtime) : r.modifiedAt) }}</span>
+              </div>
+              <div class="sftp-file-size">{{ r.isDir ? '—' : formatFileSize(r.size) }}</div>
+              <div class="sftp-file-kind">{{ fileKindLabel(r) }}</div>
+            </div>
+            <div v-if="vm.rightDisplayRows.value.length === 0" class="sftp-file-empty">
+              当前右侧目录为空
+            </div>
+          </div>
+        </section>
       </div>
     </div>
 

@@ -227,6 +227,22 @@ export function useVaultManager(params: UseVaultManagerParams) {
     vaultStatus.value = `已导入文件：${res.filePath}`
   }
 
+  const deleteVaultKey = async (item?: any) => {
+    const targetId = String(item?.id || selectedVaultKeyId.value || '').trim()
+    if (!targetId) {
+      vaultStatus.value = '请选择要删除的密钥'
+      return
+    }
+    const target = vaultItems.value.find((entry) => entry.id === targetId) || item || null
+    const targetName = String(target?.name || '未命名密钥')
+    if (!window.confirm(`确定删除密钥「${targetName}」吗？`)) return
+    const res = await window.lightterm.vaultKeyDelete({ id: targetId })
+    vaultStatus.value = res.ok ? `已删除密钥：${targetName}` : `删除失败：${res.error || '未知错误'}`
+    if (!res.ok) return
+    if (selectedVaultKeyId.value === targetId) clearVaultEditor()
+    await refreshVaultKeys()
+  }
+
   return {
     vaultMaster,
     vaultStatus,
@@ -252,6 +268,7 @@ export function useVaultManager(params: UseVaultManagerParams) {
     clearVaultEditor,
     openVaultEditor,
     saveVaultKey,
+    deleteVaultKey,
     importVaultKeyFile,
     refreshVaultKeys,
   }

@@ -11,6 +11,7 @@ import { useSerialManager } from '../composables/useSerialManager'
 import { useSftpPanels } from '../composables/useSftpPanels'
 import { useSftpViewState } from '../composables/useSftpViewState'
 import { useSftpWorkspace } from '../composables/useSftpWorkspace'
+import { useSshServerMetrics } from '../composables/useSshServerMetrics'
 import { useSnippetManager } from '../composables/useSnippetManager'
 import { useSshConnection } from '../composables/useSshConnection'
 import { useTextContextMenu } from '../composables/useTextContextMenu'
@@ -108,7 +109,9 @@ const {
   leftFileKeyword,
   rightFileKeyword,
   localSortBy,
+  localSortDirection,
   remoteSortBy,
+  remoteSortDirection,
 } = useSftpPanels()
 
 const localPath = ref('')
@@ -162,7 +165,9 @@ const {
   rightConnectCategory,
   rightConnectKeyword,
   localSortBy,
+  localSortDirection,
   remoteSortBy,
+  remoteSortDirection,
   isWindowsClient,
 })
 
@@ -355,12 +360,19 @@ const {
   hostKeyword,
   newCategoryName,
   newCategoryInputVisible,
+  editingCategory,
+  editingCategoryName,
   hostCategories,
   displayCategories,
   filteredHosts,
+  hostConnectedSessionCount,
+  openExistingHostTerminal,
   beginAddCategory,
   addCategory,
+  beginRenameCategory,
+  cancelRenameCategory,
   renameCategoryInline,
+  deleteCategoryInline,
   hostProbeRunning,
   cancelHostProbe,
   hostProbeClass,
@@ -385,6 +397,9 @@ const {
   defaultCategory: DEFAULT_CATEGORY,
   allCategory: ALL_CATEGORY,
   notify,
+  sshTabs,
+  switchSshTab,
+  focusTerminal,
   createSshTab,
   closeSshTab,
   connectSSH: (optionsOrEvent?: { keepNav?: boolean } | Event) => connectSSH(optionsOrEvent),
@@ -392,6 +407,7 @@ const {
 
 const sshConnection = useSshConnection({
   sshForm,
+  selectedHostId,
   hostName,
   authType,
   selectedKeyRef,
@@ -418,13 +434,14 @@ const {
   snippetKeyword,
   snippetCategory,
   snippetStatus,
-  snippetRunDelayMs,
   snippetRunning,
   selectedSnippetId,
   snippetEditorVisible,
   snippetEdit,
   newSnippetCategoryName,
   newSnippetCategoryInputVisible,
+  editingSnippetCategory,
+  editingSnippetCategoryName,
   terminalSnippetId,
   snippetCategories,
   displaySnippetCategories,
@@ -435,12 +452,21 @@ const {
   clearSnippetEditor,
   beginAddSnippetCategory,
   addSnippetCategory,
+  beginRenameSnippetCategory,
+  cancelRenameSnippetCategory,
+  renameSnippetCategory,
+  deleteSnippetCategory,
   saveSnippet,
   deleteSnippet,
+  executeSnippetTask,
   snippetCommandLines,
-  runSnippet,
-  stopSnippet,
+  snippetLineCount,
   snippetHostLabel,
+  snippetLastRunLabel,
+  snippetListRunLabel,
+  snippetLastRunTone,
+  snippetReminderLabel,
+  snippetReminderTone,
   runTerminalSnippet,
   sendSnippetRawToTerminal,
 } = useSnippetManager({
@@ -467,7 +493,6 @@ const terminalRuntime = useTerminalRuntime({
   sshTabs,
   getSshBuffer,
   appendSshBuffer,
-  clearSessionDecoders: (sessionId: string) => clearSessionDecoders(sessionId),
   saveSshTabs,
   clearSessionRestoreState,
   serialConnected,
@@ -480,6 +505,14 @@ const terminalRuntime = useTerminalRuntime({
   appendLocalData,
   handleLocalClose,
   handleLocalError,
+  renderActiveLocalSession: async () => {
+    if (!activeLocalSessionId.value) return
+    await nextTick()
+    initTerminal()
+    applyTerminalTheme()
+    resetTerminal()
+    writeTerminal(localBufferBySession.value[activeLocalSessionId.value] || '')
+  },
   snippetsLoaded,
   restoreSnippets,
   terminalEncodingStorageKey: TERMINAL_ENCODING_STORAGE_KEY,
@@ -596,12 +629,14 @@ const sftpPanelVm = {
   leftPanelStateLabel,
   leftLinkLabel,
   leftPanelMode,
+  localPath,
   leftLocalPathDisplay,
   leftSftpPath,
   leftDisplayRows,
   rightPanelStateLabel,
   rightLinkLabel,
   rightPanelMode,
+  rightLocalPath,
   rightLocalPathDisplay,
   sftpPath,
   rightDisplayRows,
@@ -611,6 +646,7 @@ const sftpPanelVm = {
   loadLeftSftp,
   toggleLeftConnectPanel,
   localSortBy,
+  localSortDirection,
   leftConnectPanelOpen,
   leftConnectCategory,
   leftConnectKeyword,
@@ -625,9 +661,11 @@ const sftpPanelVm = {
   onRightDrop,
   remoteGoUp,
   loadSftp,
+  loadRightLocalFs,
   promptMkdirSftp,
   toggleRightConnectPanel,
   remoteSortBy,
+  remoteSortDirection,
   rightConnectPanelOpen,
   rightConnectCategory,
   rightConnectKeyword,
@@ -646,11 +684,16 @@ const sftpPanelVm = {
 }
 
 const snippetsPanelVm = {
-  snippetRunDelayMs,
   beginAddSnippetCategory,
   newSnippetCategoryInputVisible,
   newSnippetCategoryName,
+  editingSnippetCategory,
+  editingSnippetCategoryName,
   addSnippetCategory,
+  beginRenameSnippetCategory,
+  cancelRenameSnippetCategory,
+  renameSnippetCategory,
+  deleteSnippetCategory,
   displaySnippetCategories,
   snippetCategory,
   snippetKeyword,
@@ -660,7 +703,8 @@ const snippetsPanelVm = {
   openSnippetEditor,
   snippetHostLabel,
   snippetCommandLines,
-  runSnippet,
+  snippetLineCount,
+  executeSnippetTask,
   snippetRunning,
   snippetEditorVisible,
   snippetEdit,
@@ -668,9 +712,13 @@ const snippetsPanelVm = {
   hostItems,
   openEditorContextMenu,
   deleteSnippet,
-  stopSnippet,
   saveSnippet,
   snippetStatus,
+  snippetLastRunLabel,
+  snippetListRunLabel,
+  snippetLastRunTone,
+  snippetReminderLabel,
+  snippetReminderTone,
 }
 
 const logsPanelVm = {
@@ -765,6 +813,7 @@ const {
   clearVaultEditor,
   openVaultEditor,
   saveVaultKey,
+  deleteVaultKey,
   importVaultKeyFile,
   refreshVaultKeys,
 } = useVaultManager({
@@ -780,19 +829,26 @@ const hostsPanelVm = {
   beginAddCategory,
   newCategoryInputVisible,
   newCategoryName,
+  editingCategory,
+  editingCategoryName,
   addCategory,
   displayCategories,
   selectedCategory,
+  beginRenameCategory,
+  cancelRenameCategory,
   renameCategoryInline,
+  deleteCategoryInline,
   hostKeyword,
   hostProbeRunning,
   filteredHosts,
+  hostConnectedSessionCount,
   probeFilteredHosts,
   openCreateHostEditor,
   hostItems,
   selectedHostId,
   useHost,
   openHostTerminal,
+  openExistingHostTerminal,
   hostProbeTitle,
   testHostReachability,
   hostProbeClass,
@@ -1059,6 +1115,7 @@ const vaultPanelVm = {
   clearVaultEditor,
   openVaultEditor,
   saveVaultKey,
+  deleteVaultKey,
   importVaultKeyFile,
   refreshVaultKeys,
 }
@@ -1081,14 +1138,22 @@ const openSnippetsPanel = () => {
   focusTerminal.value = false
 }
 
-const focusSshSession = (id: string) => {
-  switchSshTab(id)
-  focusTerminal.value = true
+const openSshConnectionChooser = () => {
+  activeTerminalMode.value = 'ssh'
+  nav.value = 'hosts'
+  focusTerminal.value = false
+  sshStatus.value = '请选择一个 SSH 主机，或在顶部输入快速连接'
 }
 
-const createAndFocusSshTab = () => {
-  createSshTab()
-  focusTerminal.value = true
+const handleSshTabClose = (sessionId: string) => {
+  sshStatus.value = '正在关闭 SSH 标签...'
+  void closeSshTab(sessionId).then(() => {
+    if (focusTerminal.value) {
+      sshStatus.value = 'SSH 标签已关闭'
+      return
+    }
+    sshStatus.value = '已关闭最后一个 SSH 标签，返回主机列表'
+  })
 }
 
 const terminalWorkspaceVm = {
@@ -1106,8 +1171,8 @@ const terminalWorkspaceVm = {
   snippetRunning,
   snippetKeyword,
   switchSshTab,
-  closeSshTab,
   createSshTab,
+  handleSshTabClose,
   switchLocalTab,
   closeLocalTab,
   connectLocalTerminal,
@@ -1123,8 +1188,7 @@ const terminalWorkspaceVm = {
   bindTermEl,
   exitTerminalView,
   openSnippetsPanel,
-  focusSshSession,
-  createAndFocusSshTab,
+  openSshConnectionChooser,
 }
 
 const sidebarVm = {
@@ -1140,12 +1204,34 @@ const textContextMenuVm = {
   selectAllFromTextMenu,
 }
 
+const {
+  metrics: sshServerMetrics,
+  metricsLoading: sshServerMetricsLoading,
+  metricsError: sshServerMetricsError,
+  statusBarMode,
+  activeSshTabName,
+  metricChips: sshMetricChips,
+} = useSshServerMetrics({
+  nav,
+  focusTerminal,
+  activeTerminalMode,
+  sshConnected,
+  sshSessionId,
+  sshTabs,
+})
+
 const statusText = computed(() => snippetStatus.value || sftpStatus.value || sshStatus.value || localStatus.value || syncRuntimeStatusText.value || auditStatus.value || '就绪')
 
 const statusBarVm = {
   statusText,
+  statusBarMode,
   sftpUploadProgress,
   sftpDownloadProgress,
+  sshServerMetrics,
+  sshServerMetricsLoading,
+  sshServerMetricsError,
+  activeSshTabName,
+  sshMetricChips,
 }
 
 const startupGateVm = {

@@ -40,6 +40,11 @@ export const sshConnectSchema = remoteConnSchema.extend({
   displayName: z.string().optional(),
 })
 
+export const sshExecScriptSchema = remoteConnSchema.extend({
+  script: nonEmpty,
+  timeoutMs: z.coerce.number().int().min(1000).max(600000).default(120000),
+})
+
 export const sshWriteSchema = z.object({
   sessionId: nonEmpty,
   data: z.string().default(''),

@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('lightterm', {
   hostsList: () => ipcRenderer.invoke('hosts:list'),
   hostsSave: (payload) => ipcRenderer.invoke('hosts:save', payload),
   hostsDelete: (payload) => ipcRenderer.invoke('hosts:delete', payload),
+  hostsSetCategories: (payload) => ipcRenderer.invoke('hosts:set-categories', payload),
   snippetsGetState: () => ipcRenderer.invoke('snippets:get-state'),
   snippetsSetState: (payload) => ipcRenderer.invoke('snippets:set-state', payload),
   quicktoolsGetState: () => ipcRenderer.invoke('quicktools:get-state'),
@@ -42,6 +43,7 @@ contextBridge.exposeInMainWorld('lightterm', {
   vaultKeyList: () => ipcRenderer.invoke('vault:key-list'),
   vaultKeySave: (payload) => ipcRenderer.invoke('vault:key-save', payload),
   vaultKeyGet: (payload) => ipcRenderer.invoke('vault:key-get', payload),
+  vaultKeyDelete: (payload) => ipcRenderer.invoke('vault:key-delete', payload),
   vaultKeyImportFile: () => ipcRenderer.invoke('vault:key-import-file'),
 
   syncLogin: (payload) => ipcRenderer.invoke('sync:login', payload),
@@ -72,7 +74,10 @@ contextBridge.exposeInMainWorld('lightterm', {
   onLocalError: (handler) => ipcRenderer.on('local:error', (_event, data) => handler(data)),
 
   sshTest: (config) => ipcRenderer.invoke('ssh:test', config),
+  sshList: () => ipcRenderer.invoke('ssh:list'),
   sshConnect: (config) => ipcRenderer.invoke('ssh:connect', config),
+  sshExecScript: (payload) => ipcRenderer.invoke('ssh:exec-script', payload),
+  sshMetrics: (payload) => ipcRenderer.invoke('ssh:metrics', payload),
   sshWrite: (payload) => ipcRenderer.invoke('ssh:write', payload),
   sshResize: (payload) => ipcRenderer.invoke('ssh:resize', payload),
   sshDisconnect: (payload) => ipcRenderer.invoke('ssh:disconnect', payload),

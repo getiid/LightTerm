@@ -4,27 +4,35 @@ type TerminalMode = 'ssh' | 'serial' | 'local'
 
 type UseSshConnectionParams = {
   sshForm: Ref<{ host: string; port: number; username: string; password: string }>
+  selectedHostId: Ref<string>
   hostName: Ref<string>
   authType: Ref<'password' | 'key'>
   selectedKeyRef: Ref<string>
   sshStatus: Ref<string>
   sshConnected: Ref<boolean>
-  sshTabs: Ref<Array<{ id: string; name: string; connected: boolean }>>
+  sshTabs: Ref<Array<{ id: string; name: string; connected: boolean; hostId?: string; host?: string; port?: number; username?: string }>>
   activeTerminalMode: Ref<TerminalMode>
   focusTerminal: Ref<boolean>
   nav: Ref<any>
-  ensureActiveSshSession: (name?: string) => string
+  ensureActiveSshSession: (
+    name?: string,
+    meta?: { hostId?: string; host?: string; port?: number; username?: string },
+  ) => string
   saveSshTabs: () => void
   saveSessionRestoreState: (payload: any) => void
   focusTerminalView: () => void
   writeTerminalLine: (text: string) => void
   syncQuickConnectForm: () => boolean
-  createSshTab: (name?: string) => string
+  createSshTab: (
+    name?: string,
+    meta?: { hostId?: string; host?: string; port?: number; username?: string },
+  ) => string
 }
 
 export function useSshConnection(params: UseSshConnectionParams) {
   const {
     sshForm,
+    selectedHostId,
     hostName,
     authType,
     selectedKeyRef,
@@ -48,7 +56,12 @@ export function useSshConnection(params: UseSshConnectionParams) {
       ? !!optionsOrEvent.keepNav
       : false
     const sessionLabel = (hostName.value || sshForm.value.host || '新会话').trim() || '新会话'
-    const sessionId = ensureActiveSshSession(sessionLabel)
+    const sessionId = ensureActiveSshSession(sessionLabel, {
+      hostId: selectedHostId.value || '',
+      host: sshForm.value.host,
+      port: sshForm.value.port,
+      username: sshForm.value.username,
+    })
     let privateKey = ''
     if (authType.value === 'key') {
       if (!selectedKeyRef.value) {
@@ -74,6 +87,10 @@ export function useSshConnection(params: UseSshConnectionParams) {
     const tab = sshTabs.value.find((item) => item.id === sessionId)
     if (tab) {
       tab.connected = !!res.ok
+      tab.hostId = selectedHostId.value || ''
+      tab.host = sshForm.value.host
+      tab.port = Number(sshForm.value.port || 22)
+      tab.username = sshForm.value.username
       if (res.ok) {
         const label = (hostName.value || sshForm.value.host || tab.name || '会话').trim()
         tab.name = label
@@ -105,7 +122,12 @@ export function useSshConnection(params: UseSshConnectionParams) {
     if (!syncQuickConnectForm()) return
     if (sshConnected.value) {
       const label = (hostName.value || sshForm.value.host || '新会话').trim()
-      createSshTab(label)
+      createSshTab(label, {
+        hostId: selectedHostId.value || '',
+        host: sshForm.value.host,
+        port: sshForm.value.port,
+        username: sshForm.value.username,
+      })
     }
     await connectSSH()
   }

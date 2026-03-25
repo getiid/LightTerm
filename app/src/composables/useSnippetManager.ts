@@ -7,6 +7,10 @@ export type SnippetItem = {
   hostId: string
   description: string
   commands: string
+  reminderDate: string
+  lastRunAt: number
+  lastRunStatus: 'idle' | 'running' | 'success' | 'error'
+  lastRunOutput: string
   createdAt: number
   updatedAt: number
 }
@@ -34,6 +38,8 @@ type UseSnippetManagerParams = {
 const DEFAULT_SNIPPET_CATEGORY = '部署'
 const ALL_SNIPPET_CATEGORY = '全部'
 const LEGACY_STORAGE_KEY = 'astrashell.snippets.v1'
+const WARNING_DAYS = 15
+const DAY_MS = 24 * 60 * 60 * 1000
 
 export function useSnippetManager(params: UseSnippetManagerParams) {
   const {
@@ -61,6 +67,10 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
     hostId: '',
     description: '',
     commands: '',
+    reminderDate: '',
+    lastRunAt: 0,
+    lastRunStatus: 'idle',
+    lastRunOutput: '',
     createdAt: 0,
     updatedAt: 0,
   })
@@ -79,6 +89,8 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
   const snippetExtraCategories = ref<string[]>([])
   const newSnippetCategoryName = ref('')
   const newSnippetCategoryInputVisible = ref(false)
+  const editingSnippetCategory = ref('')
+  const editingSnippetCategoryName = ref('')
   const terminalSnippetId = ref('')
 
   const snippetCategories = computed(() => {
@@ -89,6 +101,12 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
   })
 
   const displaySnippetCategories = computed(() => [allCategory, ...snippetCategories.value])
+
+  const resolveDraftCategory = () => (
+    snippetCategory.value !== allCategory && snippetCategories.value.includes(snippetCategory.value)
+      ? snippetCategory.value
+      : defaultCategory
+  )
 
   const filteredSnippetItems = computed(() => {
     const keyword = snippetKeyword.value.trim().toLowerCase()
@@ -122,6 +140,81 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
     })
   })
 
+  const formatSnippetRunTime = (value: number) => {
+    if (!value) return '未执行'
+    const date = new Date(value)
+    const y = date.getFullYear()
+    const m = `${date.getMonth() + 1}`.padStart(2, '0')
+    const d = `${date.getDate()}`.padStart(2, '0')
+    const hh = `${date.getHours()}`.padStart(2, '0')
+    const mm = `${date.getMinutes()}`.padStart(2, '0')
+    const ss = `${date.getSeconds()}`.padStart(2, '0')
+    return `${y}/${m}/${d} ${hh}:${mm}:${ss}`
+  }
+
+  const snippetLastRunLabel = (item: SnippetItem) => {
+    if (!item?.lastRunAt) return '未执行'
+    if (item.lastRunStatus === 'success') return `成功 · ${formatSnippetRunTime(item.lastRunAt)}`
+    if (item.lastRunStatus === 'error') return `失败 · ${formatSnippetRunTime(item.lastRunAt)}`
+    if (item.lastRunStatus === 'running') return '执行中...'
+    return formatSnippetRunTime(item.lastRunAt)
+  }
+
+  const snippetListRunLabel = (item: SnippetItem) => {
+    if (!item?.lastRunAt) return '未执行'
+    if (item.lastRunStatus === 'success') return '成功'
+    if (item.lastRunStatus === 'error') return '失败'
+    if (item.lastRunStatus === 'running') return '执行中'
+    return '已执行'
+  }
+
+  const snippetLastRunTone = (item: SnippetItem) => item?.lastRunStatus || 'idle'
+
+  const parseDateOnly = (value: string) => {
+    const raw = String(value || '').trim()
+    if (!raw) return null
+    const date = new Date(`${raw}T00:00:00`)
+    return Number.isNaN(date.getTime()) ? null : date
+  }
+
+  const normalizeReminderDate = (value: string) => {
+    const raw = String(value || '').trim()
+    return /^\d{4}-\d{2}-\d{2}$/.test(raw) && !!parseDateOnly(raw) ? raw : ''
+  }
+
+  const daysUntilReminder = (value: string) => {
+    const reminder = parseDateOnly(value)
+    if (!reminder) return null
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    return Math.ceil((reminder.getTime() - today.getTime()) / DAY_MS)
+  }
+
+  const snippetReminderDate = (item: SnippetItem) => normalizeReminderDate(item?.reminderDate || '')
+
+  const snippetReminderDays = (item: SnippetItem) => daysUntilReminder(snippetReminderDate(item))
+
+  const snippetReminderLabel = (item: SnippetItem) => {
+    const reminderDate = snippetReminderDate(item)
+    if (!reminderDate) return '未设提醒'
+    const days = snippetReminderDays(item)
+    if (days == null) return reminderDate
+    if (days < 0) return `已超出 ${Math.abs(days)} 天`
+    if (days === 0) return '今天提醒'
+    if (days <= WARNING_DAYS) return `还有 ${days} 天提醒`
+    return `提醒 ${reminderDate}`
+  }
+
+  const snippetReminderTone = (item: SnippetItem) => {
+    const reminderDate = snippetReminderDate(item)
+    if (!reminderDate) return 'idle'
+    const days = snippetReminderDays(item)
+    if (days == null) return 'idle'
+    if (days <= 3) return 'danger'
+    if (days <= WARNING_DAYS) return 'warning'
+    return 'quiet'
+  }
+
   const buildDefaultDockerSnippet = (): SnippetItem => ({
     id: `snippet-${Date.now().toString(36)}-docker`,
     name: '部署 Docker（Debian/Ubuntu）',
@@ -141,6 +234,10 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
       'sudo usermod -aG docker $USER',
       'docker --version',
     ].join('\n'),
+    reminderDate: '',
+    lastRunAt: 0,
+    lastRunStatus: 'idle',
+    lastRunOutput: '',
     createdAt: Date.now(),
     updatedAt: Date.now(),
   })
@@ -223,6 +320,10 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
       hostId: String(item?.hostId || ''),
       description: String(item?.description || ''),
       commands: String(item?.commands || ''),
+      reminderDate: normalizeReminderDate(String(item?.reminderDate || '')),
+      lastRunAt: Number(item?.lastRunAt || 0),
+      lastRunStatus: String(item?.lastRunStatus || 'idle'),
+      lastRunOutput: String(item?.lastRunOutput || ''),
       createdAt: Number(item?.createdAt || 0),
       updatedAt: Number(item?.updatedAt || 0),
     }))
@@ -286,19 +387,40 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
 
   const clearSnippetEditor = () => {
     selectedSnippetId.value = ''
-    snippetEdit.value = createEmptySnippet()
+    snippetEdit.value = {
+      ...createEmptySnippet(),
+      category: resolveDraftCategory(),
+    }
     snippetEditorVisible.value = true
   }
 
   const beginAddSnippetCategory = () => {
+    editingSnippetCategory.value = ''
+    editingSnippetCategoryName.value = ''
     newSnippetCategoryInputVisible.value = true
     newSnippetCategoryName.value = ''
+  }
+
+  const beginRenameSnippetCategory = (category: string) => {
+    if (!category || category === defaultCategory || category === allCategory) return
+    newSnippetCategoryInputVisible.value = false
+    editingSnippetCategory.value = category
+    editingSnippetCategoryName.value = category
+  }
+
+  const cancelRenameSnippetCategory = () => {
+    editingSnippetCategory.value = ''
+    editingSnippetCategoryName.value = ''
   }
 
   const addSnippetCategory = async () => {
     const name = newSnippetCategoryName.value.trim()
     if (!name) {
       newSnippetCategoryInputVisible.value = false
+      return
+    }
+    if (name === defaultCategory || name === allCategory) {
+      snippetStatus.value = `分类名不能使用「${name}」`
       return
     }
     if (!snippetCategories.value.includes(name) && !snippetExtraCategories.value.includes(name)) {
@@ -309,6 +431,51 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
     snippetEdit.value.category = name
     newSnippetCategoryName.value = ''
     newSnippetCategoryInputVisible.value = false
+  }
+
+  const renameSnippetCategory = async (from = editingSnippetCategory.value) => {
+    if (!from || from === defaultCategory || from === allCategory) return
+    const to = editingSnippetCategory.value === from
+      ? editingSnippetCategoryName.value.trim()
+      : ''
+    if (!to || to === from) {
+      cancelRenameSnippetCategory()
+      return
+    }
+    if (to === defaultCategory || to === allCategory) {
+      snippetStatus.value = `分类名不能使用「${to}」`
+      return
+    }
+
+    const now = Date.now()
+    snippetExtraCategories.value = [...new Set(snippetExtraCategories.value.map((item) => (item === from ? to : item)).concat(to))]
+    snippetItems.value = snippetItems.value.map((item) => (
+      item.category === from ? { ...item, category: to, updatedAt: now } : item
+    ))
+    if (snippetCategory.value === from) snippetCategory.value = to
+    if (snippetEdit.value.category === from) snippetEdit.value.category = to
+    const ok = await saveSnippetState()
+    if (!ok) return
+    cancelRenameSnippetCategory()
+    snippetStatus.value = `分类已重命名：${from} → ${to}`
+  }
+
+  const deleteSnippetCategory = async (category: string) => {
+    if (!category || category === defaultCategory || category === allCategory) return
+    const confirmed = window.confirm(`删除分类「${category}」后，相关片段会自动迁移到「${defaultCategory}」。是否继续？`)
+    if (!confirmed) return
+
+    const now = Date.now()
+    snippetItems.value = snippetItems.value.map((item) => (
+      item.category === category ? { ...item, category: defaultCategory, updatedAt: now } : item
+    ))
+    snippetExtraCategories.value = snippetExtraCategories.value.filter((item) => item !== category)
+    if (snippetCategory.value === category) snippetCategory.value = defaultCategory
+    if (snippetEdit.value.category === category) snippetEdit.value.category = defaultCategory
+    cancelRenameSnippetCategory()
+    const ok = await saveSnippetState()
+    if (!ok) return
+    snippetStatus.value = `分类已删除：${category}`
   }
 
   const saveSnippet = async () => {
@@ -323,6 +490,11 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
       snippetStatus.value = '请至少填写一条命令'
       return
     }
+    const reminderDate = normalizeReminderDate(draft.reminderDate || '')
+    if (draft.reminderDate && !reminderDate) {
+      snippetStatus.value = '请填写有效的提醒日期'
+      return
+    }
 
     const now = Date.now()
     const next: SnippetItem = {
@@ -332,6 +504,10 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
       hostId: draft.hostId || '',
       description: draft.description || '',
       commands,
+      reminderDate,
+      lastRunAt: Number(draft.lastRunAt || 0),
+      lastRunStatus: (draft.lastRunStatus || 'idle') as SnippetItem['lastRunStatus'],
+      lastRunOutput: String(draft.lastRunOutput || ''),
       createdAt: draft.createdAt || now,
       updatedAt: now,
     }
@@ -363,12 +539,125 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
 
   const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
+  const updateSnippetResult = async (
+    snippetId: string,
+    patch: Partial<Pick<SnippetItem, 'lastRunAt' | 'lastRunStatus' | 'lastRunOutput' | 'updatedAt'>>,
+  ) => {
+    if (!snippetId) return
+    const nextUpdatedAt = Number(patch.updatedAt || Date.now())
+    snippetItems.value = snippetItems.value.map((item) => (
+      item.id === snippetId
+        ? {
+            ...item,
+            ...patch,
+            updatedAt: nextUpdatedAt,
+          }
+        : item
+    ))
+    if (snippetEdit.value.id === snippetId) {
+      snippetEdit.value = {
+        ...snippetEdit.value,
+        ...patch,
+        updatedAt: nextUpdatedAt,
+      }
+    }
+    await saveSnippetState()
+  }
+
+  const buildSnippetExecConfig = async (target: SnippetItem) => {
+    const host = hostItems.value.find((item) => item.id === target.hostId)
+    if (!host) throw new Error('未找到绑定的目标服务器')
+    let privateKey = ''
+    if ((host.auth_type || host.authType) === 'key') {
+      const keyRef = String(host.private_key_ref || host.privateKeyRef || '').trim()
+      if (!keyRef) throw new Error('目标服务器缺少可用密钥')
+      const keyRes = await window.lightterm.vaultKeyGet({ id: keyRef })
+      if (!keyRes.ok || !keyRes.item?.privateKey) {
+        throw new Error(keyRes.error || '读取服务器密钥失败')
+      }
+      privateKey = String(keyRes.item.privateKey || '')
+    }
+    return {
+      host: String(host.host || ''),
+      port: Number(host.port || 22),
+      username: String(host.username || ''),
+      password: (host.auth_type || host.authType) === 'key' ? undefined : (String(host.password || '') || undefined),
+      privateKey: privateKey || undefined,
+    }
+  }
+
+  const executeSnippetTask = async (target: SnippetItem) => {
+    if (!target?.id) {
+      snippetStatus.value = '请先选择一个代码片段'
+      return false
+    }
+    if (!target.hostId) {
+      const message = '请先给代码片段绑定目标服务器'
+      snippetStatus.value = message
+      await updateSnippetResult(target.id, {
+        lastRunAt: Date.now(),
+        lastRunStatus: 'error',
+        lastRunOutput: message,
+      })
+      return false
+    }
+    const script = String(target.commands || '').trim()
+    if (!script) {
+      snippetStatus.value = '片段内容为空'
+      return false
+    }
+    const currentItem = snippetItems.value.find((item) => item.id === target.id)
+    if (currentItem?.lastRunStatus === 'running') return false
+
+    await updateSnippetResult(target.id, {
+      lastRunAt: Date.now(),
+      lastRunStatus: 'running',
+      lastRunOutput: '正在执行片段...',
+    })
+    try {
+      const config = await buildSnippetExecConfig(target)
+      const res = await window.lightterm.sshExecScript({
+        ...config,
+        script,
+        timeoutMs: 180000,
+      })
+      const stdout = String(res.stdout || '').trim()
+      const stderr = String(res.stderr || '').trim()
+      const mergedOutput = [stdout, stderr].filter(Boolean).join('\n\n').trim()
+      const finalOutput = mergedOutput || (res.ok ? '执行完成，无输出' : (res.error || '执行失败'))
+      await updateSnippetResult(target.id, {
+        lastRunAt: Date.now(),
+        lastRunStatus: res.ok ? 'success' : 'error',
+        lastRunOutput: finalOutput.slice(0, 8000),
+      })
+      snippetStatus.value = res.ok
+        ? `执行完成：${target.name}`
+        : `执行失败：${target.name}${res.error ? ` ｜ ${res.error}` : ''}`
+      return !!res.ok
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '执行失败'
+      await updateSnippetResult(target.id, {
+        lastRunAt: Date.now(),
+        lastRunStatus: 'error',
+        lastRunOutput: message,
+      })
+      snippetStatus.value = `执行失败：${message}`
+      return false
+    }
+  }
+
   const snippetCommandLines = (commands: string) => (
     commands
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => !!line && !line.startsWith('#'))
   )
+
+  const snippetLineCount = (commands: string) => {
+    const raw = String(commands || '')
+    if (!raw.trim()) return 0
+    return raw.split('\n').length
+  }
 
   const ensureSnippetSession = async (target: SnippetItem) => {
     if (target.hostId) {
@@ -400,50 +689,7 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
     const target = item
       || snippetItems.value.find((entry) => entry.id === selectedSnippetId.value)
       || snippetEdit.value
-    if (!target?.id && !target?.commands?.trim()) {
-      snippetStatus.value = '请先选择或创建代码片段'
-      return
-    }
-    if (snippetRunning.value) {
-      snippetStatus.value = '已有片段在执行中'
-      return
-    }
-
-    const commands = snippetCommandLines(target.commands || '')
-    if (commands.length === 0) {
-      snippetStatus.value = '没有可执行命令（空行和 # 注释会自动跳过）'
-      return
-    }
-    const ready = await ensureSnippetSession(target)
-    if (!ready) return
-
-    snippetRunning.value = true
-    snippetStopRequested.value = false
-    const delayMs = Math.max(200, Number(snippetRunDelayMs.value || 0))
-    snippetStatus.value = `开始执行：${target.name || '未命名片段'}（共 ${commands.length} 条）`
-
-    let sent = 0
-    for (let i = 0; i < commands.length; i += 1) {
-      if (snippetStopRequested.value) {
-        snippetStatus.value = `已停止：${target.name || '未命名片段'}（已发送 ${sent}/${commands.length}）`
-        break
-      }
-      const cmd = commands[i]
-      snippetStatus.value = `执行中 ${i + 1}/${commands.length}：${cmd}`
-      const res = await window.lightterm.sshWrite({ sessionId: sshSessionId.value, data: `${cmd}\n` })
-      if (!res.ok) {
-        snippetStatus.value = `第 ${i + 1} 条发送失败：${res.error || '未知错误'}`
-        break
-      }
-      sent += 1
-      if (i < commands.length - 1) await sleep(delayMs)
-    }
-
-    if (!snippetStopRequested.value && sent === commands.length) {
-      snippetStatus.value = `发送完成：${target.name || '未命名片段'}（${commands.length} 条）`
-    }
-    snippetRunning.value = false
-    snippetStopRequested.value = false
+    await executeSnippetTask(target)
   }
 
   const stopSnippet = () => {
@@ -601,6 +847,8 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
     snippetExtraCategories,
     newSnippetCategoryName,
     newSnippetCategoryInputVisible,
+    editingSnippetCategory,
+    editingSnippetCategoryName,
     terminalSnippetId,
     snippetCategories,
     displaySnippetCategories,
@@ -613,12 +861,26 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
     clearSnippetEditor,
     beginAddSnippetCategory,
     addSnippetCategory,
+    beginRenameSnippetCategory,
+    cancelRenameSnippetCategory,
+    renameSnippetCategory,
+    deleteSnippetCategory,
     saveSnippet,
     deleteSnippet,
+    executeSnippetTask,
     snippetCommandLines,
+    snippetLineCount,
     runSnippet,
     stopSnippet,
     snippetHostLabel,
+    formatSnippetRunTime,
+    snippetLastRunLabel,
+    snippetListRunLabel,
+    snippetLastRunTone,
+    snippetReminderDate,
+    snippetReminderDays,
+    snippetReminderLabel,
+    snippetReminderTone,
     getTerminalSnippet,
     runTerminalSnippet,
     sendSnippetRawToTerminal,
