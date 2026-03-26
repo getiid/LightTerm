@@ -133,6 +133,6 @@ const { vm } = defineProps<{ vm: any }>()
       </div>
     </div>
     <p>{{ vm.storageMsg.value }}</p>
-    <p class="hint">共享文件只保存：主机 / 片段 / 密钥 / 快捷工具。日志仍保存在本地，不参与多端同步。</p>
+    <p class="hint">共享文件只保存：主机 / 片段 / 密钥。日志仍保存在本地，不参与多端同步。</p>
   </section>
 </template>

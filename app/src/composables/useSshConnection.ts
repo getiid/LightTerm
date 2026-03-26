@@ -55,6 +55,7 @@ export function useSshConnection(params: UseSshConnectionParams) {
     const keepNav = typeof optionsOrEvent === 'object' && optionsOrEvent !== null && 'keepNav' in optionsOrEvent
       ? !!optionsOrEvent.keepNav
       : false
+    const useInteractiveAuth = authType.value === 'password' && !String(sshForm.value.password || '').trim()
     const sessionLabel = (hostName.value || sshForm.value.host || '新会话').trim() || '新会话'
     const sessionId = ensureActiveSshSession(sessionLabel, {
       hostId: selectedHostId.value || '',
@@ -97,10 +98,14 @@ export function useSshConnection(params: UseSshConnectionParams) {
       }
     }
     saveSshTabs()
-    sshStatus.value = res.ok ? 'SSH 交互会话已连接' : `SSH 连接失败：${res.error}`
+    sshStatus.value = res.ok
+      ? (useInteractiveAuth ? 'SSH 终端已打开，请在终端中完成认证' : 'SSH 交互会话已连接')
+      : `SSH 连接失败：${res.error}`
     if (res.ok) {
       activeTerminalMode.value = 'ssh'
-      writeTerminalLine('\r\n[SSH 已连接，可直接输入命令]')
+      writeTerminalLine(useInteractiveAuth
+        ? '\r\n[SSH 终端已启动，请在终端中完成认证]'
+        : '\r\n[SSH 已连接，可直接输入命令]')
       focusTerminal.value = true
       saveSessionRestoreState({
         type: 'ssh',

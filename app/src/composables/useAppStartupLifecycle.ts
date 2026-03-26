@@ -51,8 +51,6 @@ type UseAppStartupLifecycleParams = {
   formatAppError: (error: unknown) => string
   clearSessionRestoreState: () => void
   clearSshTabs: () => void
-  restoreLocalQuickItems: () => Promise<void>
-  resetLocalQuickDraft: () => void
   loadTerminalEncoding: () => void
   refreshBackupList: () => Promise<void>
   runStartupSyncPull: () => Promise<void>
@@ -103,8 +101,6 @@ export function useAppStartupLifecycle(params: UseAppStartupLifecycleParams) {
     formatAppError,
     clearSessionRestoreState,
     clearSshTabs,
-    restoreLocalQuickItems,
-    resetLocalQuickDraft,
     loadTerminalEncoding,
     refreshBackupList,
     runStartupSyncPull,
@@ -215,7 +211,10 @@ export function useAppStartupLifecycle(params: UseAppStartupLifecycleParams) {
       return
     }
 
-    if (value === 'local') return
+    if (value === 'local') {
+      if (!snippetsLoaded.value) await restoreSnippets()
+      return
+    }
 
     if (value === 'vault') {
       if (vaultUnlocked.value && !vaultKeysLoaded.value) await refreshVaultKeys()
@@ -254,8 +253,6 @@ export function useAppStartupLifecycle(params: UseAppStartupLifecycleParams) {
     }
 
     clearSshTabs()
-    await restoreLocalQuickItems()
-    resetLocalQuickDraft()
     loadTerminalEncoding()
     void refreshBackupList()
     if (startupGateVisible.value) return

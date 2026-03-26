@@ -21,7 +21,6 @@ export function useHostCrud(params: {
   sshForm: Ref<any>
   quickConnectInput: Ref<string>
   selectedHostId: Ref<string>
-  hostItems: Ref<any[]>
   hostName: Ref<string>
   hostCategory: Ref<string>
   selectedCategory: Ref<string>
@@ -41,7 +40,6 @@ export function useHostCrud(params: {
     sshForm,
     quickConnectInput,
     selectedHostId,
-    hostItems,
     hostName,
     hostCategory,
     selectedCategory,
@@ -58,29 +56,31 @@ export function useHostCrud(params: {
     connectHostTerminal,
   } = params
 
+  const applyQuickConnectResolvedState = (parsed: { username: string; host: string; port: number }) => {
+    sshForm.value.host = parsed.host
+    sshForm.value.port = parsed.port
+    sshForm.value.username = parsed.username
+    selectedHostId.value = ''
+    hostName.value = `${parsed.username}@${parsed.host}`
+    hostCategory.value = DEFAULT_CATEGORY
+    authType.value = 'password'
+    sshForm.value.password = ''
+    selectedKeyRef.value = ''
+  }
+
+  const handleQuickConnectInputChanged = () => {
+    const parsed = parseQuickConnectInput(quickConnectInput.value)
+    if (!parsed.ok) return
+    applyQuickConnectResolvedState(parsed)
+  }
+
   const syncQuickConnectForm = () => {
     const parsed = parseQuickConnectInput(quickConnectInput.value)
     if (!parsed.ok) {
       sshStatus.value = parsed.error
       return false
     }
-    const selectedHost = hostItems.value.find((item) => item.id === selectedHostId.value)
-    const selectedTarget = selectedHost ? formatQuickConnectValue(selectedHost) : ''
-    sshForm.value.host = parsed.host
-    sshForm.value.port = parsed.port
-    sshForm.value.username = parsed.username
-    if (selectedHost && quickConnectInput.value.trim() === selectedTarget) {
-      hostName.value = selectedHost.name || `${parsed.username}@${parsed.host}`
-      hostCategory.value = selectedHost.category || DEFAULT_CATEGORY
-      authType.value = selectedHost.auth_type === 'key' ? 'key' : 'password'
-      selectedKeyRef.value = selectedHost.private_key_ref || ''
-    } else {
-      selectedHostId.value = ''
-      hostName.value = `${parsed.username}@${parsed.host}`
-      hostCategory.value = DEFAULT_CATEGORY
-      authType.value = 'password'
-      selectedKeyRef.value = ''
-    }
+    applyQuickConnectResolvedState(parsed)
     return true
   }
 
@@ -183,6 +183,7 @@ export function useHostCrud(params: {
   }
 
   return {
+    handleQuickConnectInputChanged,
     syncQuickConnectForm,
     saveCurrentHost,
     useHost,

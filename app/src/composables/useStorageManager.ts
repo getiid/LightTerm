@@ -73,7 +73,7 @@ export function useStorageManager(params: UseStorageManagerParams) {
         const fileState = meta.exists ? '存在' : '不存在'
         const sig = String(meta.signature || '').split(':').pop() || ''
         const sigShort = sig ? sig.slice(0, 8) : '-'
-        storageMetaText.value = `当前读取：${meta.dbPath || '-'} ｜ 文件：${fileState} ｜ 大小：${kb.toFixed(1)} KB ｜ 修改时间：${modified} ｜ 数据：主机 ${meta.hosts || 0} / 片段 ${meta.snippets || 0} / 密钥 ${meta.vaultKeys || 0} / 快捷工具 ${meta.quickTools || 0} / 日志 ${meta.logs || 0} ｜ fileId：${meta.fileId || '-'} ｜ rev：${meta.revision ?? 0} ｜ 指纹：${sigShort} ｜ 本地存储：明文 ｜ 格式：v${meta.storageVersion || 1}`
+        storageMetaText.value = `当前读取：${meta.dbPath || '-'} ｜ 文件：${fileState} ｜ 大小：${kb.toFixed(1)} KB ｜ 修改时间：${modified} ｜ 数据：主机 ${meta.hosts || 0} / 片段 ${meta.snippets || 0} / 密钥 ${meta.vaultKeys || 0} / 日志 ${meta.logs || 0} ｜ fileId：${meta.fileId || '-'} ｜ rev：${meta.revision ?? 0} ｜ 指纹：${sigShort} ｜ 本地存储：明文 ｜ 格式：v${meta.storageVersion || 1}`
       }
     } catch (error) {
       onError?.(`读取数据文件路径失败：${formatAppError(error)}`)

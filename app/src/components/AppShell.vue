@@ -4,7 +4,6 @@ import { useAuditManager } from '../composables/useAuditManager'
 import { useAppStartupLifecycle } from '../composables/useAppStartupLifecycle'
 import { useAppShellSupport } from '../composables/useAppShellSupport'
 import { useHostWorkspace } from '../composables/useHostWorkspace'
-import { useLocalQuickTools } from '../composables/useLocalQuickTools'
 import { useLocalTerminalManager } from '../composables/useLocalTerminalManager'
 import { useSerialBaudSync } from '../composables/useSerialBaudSync'
 import { useSerialManager } from '../composables/useSerialManager'
@@ -232,6 +231,7 @@ let connectSSHFromHosts = async () => {}
 const {
   localTabs,
   activeLocalTabId,
+  selectedLocalTabId,
   localBufferBySession,
   localCwd,
   localStatus,
@@ -239,11 +239,17 @@ const {
   localElevated,
   activeLocalSessionId,
   localConnected,
+  localCommandTitle,
+  localCommandStateLabel,
+  localCommandStateClass,
+  localCommandMeta,
+  selectLocalTab,
   switchLocalTab,
+  openLocalTab,
+  recordLocalInput,
   connectLocalTerminal,
   closeLocalTab,
   disconnectLocalTerminal,
-  runLocalQuickCommand,
   appendLocalData,
   handleLocalClose,
   handleLocalError,
@@ -264,25 +270,6 @@ const {
     focusNativeTerminal()
     await syncLocalTerminalSize()
   },
-})
-const {
-  localQuickCategory,
-  localQuickEditId,
-  localQuickEditorVisible,
-  localQuickDraftCategory,
-  localQuickDraftLabel,
-  localQuickDraftCmd,
-  localQuickCategories,
-  filteredLocalQuickItems,
-  restoreLocalQuickItems,
-  startEditLocalQuickItem,
-  resetLocalQuickDraft,
-  openLocalQuickCreate,
-  closeLocalQuickEditor,
-  saveLocalQuickDraft,
-  removeLocalQuickItem,
-} = useLocalQuickTools({
-  localStatus,
 })
 const {
   serialPortsLoaded,
@@ -433,6 +420,8 @@ const {
   snippetsLoaded,
   snippetKeyword,
   snippetCategory,
+  localSnippetCategory,
+  localSnippetKeyword,
   snippetStatus,
   snippetRunning,
   selectedSnippetId,
@@ -443,9 +432,13 @@ const {
   editingSnippetCategory,
   editingSnippetCategoryName,
   terminalSnippetId,
+  terminalSnippetCategory,
+  terminalSnippetCategories,
   snippetCategories,
   displaySnippetCategories,
   filteredSnippetItems,
+  localSnippetCategories,
+  filteredLocalSnippetItems,
   terminalSnippetItems,
   restoreSnippets,
   openSnippetEditor,
@@ -468,6 +461,7 @@ const {
   snippetReminderLabel,
   snippetReminderTone,
   runTerminalSnippet,
+  executeSnippetOnLocalTerminal,
   sendSnippetRawToTerminal,
 } = useSnippetManager({
   hostItems,
@@ -479,6 +473,7 @@ const {
   serialCurrentPath,
   localConnected,
   activeLocalSessionId,
+  recordLocalInput,
   useHost,
   connectSSH,
   focusTerminal: () => focusNativeTerminal(),
@@ -502,6 +497,7 @@ const terminalRuntime = useTerminalRuntime({
   localConnected,
   activeLocalSessionId,
   localStatus,
+  recordLocalInput,
   appendLocalData,
   handleLocalClose,
   handleLocalError,
@@ -763,29 +759,30 @@ const localPanelVm = {
   isWindowsClient,
   localTabs,
   activeLocalTabId,
+  selectedLocalTabId,
   localShellType,
   localElevated,
   localConnected,
   localStatus,
-  localQuickCategory,
-  localQuickEditId,
-  localQuickEditorVisible,
-  localQuickDraftCategory,
-  localQuickDraftLabel,
-  localQuickDraftCmd,
-  localQuickCategories,
-  filteredLocalQuickItems,
+  localCommandTitle,
+  localCommandStateLabel,
+  localCommandStateClass,
+  localCommandMeta,
+  selectLocalTab,
+  localSnippetCategory,
+  localSnippetKeyword,
+  localSnippetCategories,
+  filteredLocalSnippetItems,
+  snippetStatus,
+  snippetRunning,
+  snippetCommandLines,
   switchLocalTab,
+  openLocalTab,
   connectLocalTerminal,
   closeLocalTab,
   disconnectLocalTerminal,
-  runLocalQuickCommand,
-  startEditLocalQuickItem,
-  resetLocalQuickDraft,
-  openLocalQuickCreate,
-  closeLocalQuickEditor,
-  saveLocalQuickDraft,
-  removeLocalQuickItem,
+  executeSnippetOnLocalTerminal,
+  openSnippetsPanel,
 }
 
 const {
@@ -1031,8 +1028,6 @@ const {
   formatAppError,
   clearSessionRestoreState,
   clearSshTabs,
-  restoreLocalQuickItems,
-  resetLocalQuickDraft,
   loadTerminalEncoding,
   refreshBackupList,
   runStartupSyncPull,
@@ -1133,7 +1128,7 @@ const selectNav = (target: NavKey) => {
   nav.value = target
 }
 
-const openSnippetsPanel = () => {
+function openSnippetsPanel() {
   nav.value = 'snippets'
   focusTerminal.value = false
 }
@@ -1143,6 +1138,15 @@ const openSshConnectionChooser = () => {
   nav.value = 'hosts'
   focusTerminal.value = false
   sshStatus.value = '请选择一个 SSH 主机，或在顶部输入快速连接'
+}
+
+const openLocalTerminalChooser = () => {
+  activeTerminalMode.value = 'local'
+  nav.value = 'local'
+  focusTerminal.value = false
+  localStatus.value = localTabs.value.length > 0
+    ? '已返回本地终端面板，可继续进入已开的会话'
+    : '请选择或新建一个本地终端'
 }
 
 const handleSshTabClose = (sessionId: string) => {
@@ -1165,14 +1169,18 @@ const terminalWorkspaceVm = {
   sshSessionId,
   localTabs,
   activeLocalTabId,
+  selectedLocalTabId,
   terminalEncoding,
   terminalSnippetId,
+  terminalSnippetCategory,
+  terminalSnippetCategories,
   terminalSnippetItems,
   snippetRunning,
   snippetKeyword,
   switchSshTab,
   createSshTab,
   handleSshTabClose,
+  selectLocalTab,
   switchLocalTab,
   closeLocalTab,
   connectLocalTerminal,
@@ -1189,6 +1197,7 @@ const terminalWorkspaceVm = {
   exitTerminalView,
   openSnippetsPanel,
   openSshConnectionChooser,
+  openLocalTerminalChooser,
 }
 
 const sidebarVm = {

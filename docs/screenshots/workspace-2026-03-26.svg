@@ -1,0 +1,153 @@
+<svg width="1440" height="920" viewBox="0 0 1440 920" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1440" height="920" rx="28" fill="#E6EDF7"/>
+  <rect x="1" y="1" width="1438" height="918" rx="27" fill="#F6F9FD" stroke="#D5E0EE"/>
+  <rect x="0" y="0" width="1440" height="52" rx="28" fill="#F3F7FC"/>
+  <circle cx="28" cy="26" r="7" fill="#FF5F57"/>
+  <circle cx="48" cy="26" r="7" fill="#FEBC2E"/>
+  <circle cx="68" cy="26" r="7" fill="#28C840"/>
+  <text x="92" y="31" fill="#1E293B" font-family="Arial, 'PingFang SC', sans-serif" font-size="16" font-weight="700">AstraShell</text>
+
+  <rect x="0" y="52" width="230" height="868" fill="#EEF3F9"/>
+  <rect x="24" y="82" width="182" height="58" rx="18" fill="#FFFFFF" stroke="#D5E0EE"/>
+  <rect x="40" y="95" width="34" height="34" rx="12" fill="#0B5BFF"/>
+  <text x="90" y="117" fill="#10213E" font-family="Arial, 'PingFang SC', sans-serif" font-size="22" font-weight="700">AstraShell</text>
+
+  <rect x="16" y="168" width="198" height="42" rx="14" fill="#DCE9FF"/>
+  <text x="52" y="194" fill="#0D3FB7" font-family="Arial, 'PingFang SC', sans-serif" font-size="16" font-weight="700">Hosts</text>
+  <g fill="#475569" font-family="Arial, 'PingFang SC', sans-serif" font-size="15" font-weight="600">
+    <text x="52" y="246">SFTP</text>
+    <text x="52" y="294">Snippets</text>
+    <text x="52" y="342">Serial</text>
+    <text x="52" y="390">Local</text>
+    <text x="52" y="438">Vault</text>
+    <text x="52" y="486">Settings</text>
+    <text x="52" y="534">Logs</text>
+  </g>
+  <g stroke="#64748B" stroke-width="2" stroke-linecap="round">
+    <path d="M30 188H42"/>
+    <path d="M30 236H42"/>
+    <path d="M30 284H42"/>
+    <path d="M30 332H42"/>
+    <path d="M30 380H42"/>
+    <path d="M30 428H42"/>
+    <path d="M30 476H42"/>
+    <path d="M30 524H42"/>
+  </g>
+  <rect x="18" y="780" width="194" height="110" rx="20" fill="#FFFFFF" stroke="#D5E0EE"/>
+  <text x="34" y="810" fill="#0F172A" font-family="Arial, 'PingFang SC', sans-serif" font-size="14" font-weight="700">Community Driven</text>
+  <text x="34" y="836" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="12">开源、免费、持续迭代</text>
+  <text x="34" y="864" fill="#2563EB" font-family="Arial, 'PingFang SC', sans-serif" font-size="12">github.com/getiid/AstraShell</text>
+
+  <rect x="248" y="70" width="1168" height="830" rx="24" fill="#F8FBFF" stroke="#D8E3F0"/>
+  <rect x="268" y="90" width="1128" height="58" rx="18" fill="#FFFFFF" stroke="#D8E3F0"/>
+  <text x="292" y="124" fill="#0F172A" font-family="Arial, 'PingFang SC', sans-serif" font-size="20" font-weight="700">主工作台</text>
+  <text x="420" y="124" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="13">SSH / Local / Serial / Snippets / Sync 一体化</text>
+
+  <rect x="268" y="166" width="390" height="330" rx="20" fill="#E9F0F8" stroke="#D8E3F0"/>
+  <text x="290" y="196" fill="#0F172A" font-family="Arial, 'PingFang SC', sans-serif" font-size="18" font-weight="700">Hosts Manager</text>
+  <text x="290" y="218" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="12">快速连接、分类、编辑分离、双击直连</text>
+  <rect x="290" y="240" width="170" height="36" rx="10" fill="#FFFFFF" stroke="#D5E0EE"/>
+  <text x="306" y="263" fill="#94A3B8" font-family="Arial, 'PingFang SC', sans-serif" font-size="12">快速连接：jonny@192.168.0.200</text>
+  <rect x="470" y="240" width="84" height="36" rx="10" fill="#0B5BFF"/>
+  <text x="494" y="263" fill="#FFFFFF" font-family="Arial, 'PingFang SC', sans-serif" font-size="12" font-weight="700">连接</text>
+
+  <rect x="290" y="294" width="160" height="164" rx="16" fill="#FFFFFF" stroke="#CFE0F5"/>
+  <text x="308" y="320" fill="#0F172A" font-family="Arial, 'PingFang SC', sans-serif" font-size="14" font-weight="700">生产环境</text>
+  <text x="308" y="344" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="12">ubuntu-prod-01</text>
+  <text x="308" y="366" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="12">root@10.0.0.15:22</text>
+  <rect x="308" y="386" width="64" height="24" rx="12" fill="#DCFCE7"/>
+  <text x="326" y="402" fill="#166534" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">在线</text>
+  <rect x="308" y="424" width="120" height="10" rx="5" fill="#E2E8F0"/>
+  <rect x="308" y="442" width="92" height="10" rx="5" fill="#E2E8F0"/>
+
+  <rect x="468" y="294" width="170" height="164" rx="16" fill="#FFFFFF" stroke="#CFE0F5"/>
+  <text x="486" y="320" fill="#0F172A" font-family="Arial, 'PingFang SC', sans-serif" font-size="14" font-weight="700">测试环境</text>
+  <text x="486" y="344" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="12">debian-stage-02</text>
+  <text x="486" y="366" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="12">ops@10.0.0.32:22</text>
+  <rect x="486" y="386" width="88" height="24" rx="12" fill="#DBEAFE"/>
+  <text x="506" y="402" fill="#1D4ED8" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">待连接</text>
+  <rect x="486" y="424" width="122" height="10" rx="5" fill="#E2E8F0"/>
+  <rect x="486" y="442" width="84" height="10" rx="5" fill="#E2E8F0"/>
+
+  <rect x="676" y="166" width="720" height="330" rx="20" fill="#EDF3FA" stroke="#D8E3F0"/>
+  <text x="698" y="196" fill="#0F172A" font-family="Arial, 'PingFang SC', sans-serif" font-size="18" font-weight="700">Terminal Workspace</text>
+  <text x="698" y="218" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="12">标签会话、工具抽屉、片段按分类查找</text>
+
+  <rect x="698" y="238" width="676" height="44" rx="14" fill="#FFFFFF" stroke="#D8E3F0"/>
+  <rect x="714" y="247" width="92" height="26" rx="13" fill="#DBEAFE"/>
+  <text x="741" y="264" fill="#1D4ED8" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">本地终端</text>
+  <rect x="822" y="247" width="118" height="26" rx="13" fill="#EFF6FF" stroke="#BFDBFE"/>
+  <text x="848" y="264" fill="#334155" font-family="Arial, 'PingFang SC', sans-serif" font-size="11">~/server · 1</text>
+  <rect x="950" y="247" width="134" height="26" rx="13" fill="#0B5BFF"/>
+  <text x="984" y="264" fill="#FFFFFF" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">npm run build</text>
+  <rect x="1230" y="247" width="58" height="26" rx="13" fill="#FFFFFF" stroke="#D8E3F0"/>
+  <text x="1249" y="264" fill="#334155" font-family="Arial, 'PingFang SC', sans-serif" font-size="11">返回</text>
+  <rect x="1296" y="247" width="30" height="26" rx="13" fill="#FFFFFF" stroke="#D8E3F0"/>
+  <text x="1305" y="264" fill="#334155" font-family="Arial, 'PingFang SC', sans-serif" font-size="16">≡</text>
+
+  <rect x="698" y="296" width="496" height="180" rx="16" fill="#07101D"/>
+  <text x="720" y="326" fill="#8DB4FF" font-family="Menlo, Consolas, monospace" font-size="14">jonny@BigFace  ~/AstraShell/app</text>
+  <text x="720" y="352" fill="#E2E8F0" font-family="Menlo, Consolas, monospace" font-size="14">$ npm run build:web</text>
+  <text x="720" y="378" fill="#7DD3FC" font-family="Menlo, Consolas, monospace" font-size="14">&gt; vue-tsc -b</text>
+  <text x="720" y="404" fill="#86EFAC" font-family="Menlo, Consolas, monospace" font-size="14">✓ Build complete in 2.4s</text>
+  <text x="720" y="430" fill="#94A3B8" font-family="Menlo, Consolas, monospace" font-size="14">$ _</text>
+
+  <rect x="1212" y="296" width="162" height="180" rx="16" fill="#FFFFFF" stroke="#D8E3F0"/>
+  <text x="1230" y="324" fill="#0F172A" font-family="Arial, 'PingFang SC', sans-serif" font-size="13" font-weight="700">终端工具</text>
+  <text x="1230" y="352" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="11">片段分类</text>
+  <rect x="1230" y="360" width="126" height="28" rx="10" fill="#F8FAFC" stroke="#D8E3F0"/>
+  <text x="1246" y="378" fill="#334155" font-family="Arial, 'PingFang SC', sans-serif" font-size="11">部署</text>
+  <text x="1340" y="378" fill="#94A3B8" font-family="Arial, 'PingFang SC', sans-serif" font-size="11">▾</text>
+  <text x="1230" y="410" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="11">代码片段</text>
+  <rect x="1230" y="418" width="126" height="28" rx="10" fill="#F8FAFC" stroke="#D8E3F0"/>
+  <text x="1246" y="436" fill="#334155" font-family="Arial, 'PingFang SC', sans-serif" font-size="11">部署 Docker</text>
+  <text x="1340" y="436" fill="#94A3B8" font-family="Arial, 'PingFang SC', sans-serif" font-size="11">▾</text>
+  <rect x="1230" y="454" width="126" height="28" rx="10" fill="#E2E8F0"/>
+  <text x="1268" y="472" fill="#334155" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">执行片段</text>
+
+  <rect x="268" y="516" width="1128" height="364" rx="20" fill="#EFF5FB" stroke="#D8E3F0"/>
+  <text x="290" y="546" fill="#0F172A" font-family="Arial, 'PingFang SC', sans-serif" font-size="18" font-weight="700">Current Workflows</text>
+  <text x="290" y="568" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="12">近期重点已经覆盖 SSH 快速连接、本地终端多会话、片段分类和聚合日志。</text>
+
+  <rect x="290" y="592" width="248" height="248" rx="18" fill="#FFFFFF" stroke="#D8E3F0"/>
+  <text x="312" y="624" fill="#0F172A" font-family="Arial, 'PingFang SC', sans-serif" font-size="16" font-weight="700">SSH 快速连接</text>
+  <text x="312" y="654" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="13">输入 `user@host` 后直接进交互终端，不强行预校验密码。</text>
+  <rect x="312" y="690" width="120" height="30" rx="15" fill="#DBEAFE"/>
+  <text x="338" y="709" fill="#1D4ED8" font-family="Arial, 'PingFang SC', sans-serif" font-size="12" font-weight="700">直接进入 PTY</text>
+  <rect x="312" y="738" width="164" height="10" rx="5" fill="#E2E8F0"/>
+  <rect x="312" y="758" width="140" height="10" rx="5" fill="#E2E8F0"/>
+  <rect x="312" y="778" width="118" height="10" rx="5" fill="#E2E8F0"/>
+
+  <rect x="560" y="592" width="248" height="248" rx="18" fill="#FFFFFF" stroke="#D8E3F0"/>
+  <text x="582" y="624" fill="#0F172A" font-family="Arial, 'PingFang SC', sans-serif" font-size="16" font-weight="700">本地终端多标签</text>
+  <text x="582" y="654" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="13">返回面板不掉线，卡片显示最近命令和状态，单击选中、双击进入。</text>
+  <rect x="582" y="690" width="82" height="26" rx="13" fill="#DCFCE7"/>
+  <text x="606" y="707" fill="#166534" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">已完成</text>
+  <rect x="676" y="690" width="82" height="26" rx="13" fill="#DBEAFE"/>
+  <text x="700" y="707" fill="#1D4ED8" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">处理中</text>
+  <rect x="582" y="738" width="168" height="10" rx="5" fill="#E2E8F0"/>
+  <rect x="582" y="758" width="154" height="10" rx="5" fill="#E2E8F0"/>
+  <rect x="582" y="778" width="132" height="10" rx="5" fill="#E2E8F0"/>
+
+  <rect x="830" y="592" width="248" height="248" rx="18" fill="#FFFFFF" stroke="#D8E3F0"/>
+  <text x="852" y="624" fill="#0F172A" font-family="Arial, 'PingFang SC', sans-serif" font-size="16" font-weight="700">代码片段中心</text>
+  <text x="852" y="654" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="13">快捷工具已经并入代码片段，统一按分类维护、筛选和执行。</text>
+  <rect x="852" y="690" width="76" height="26" rx="13" fill="#F3E8FF"/>
+  <text x="876" y="707" fill="#7C3AED" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">部署</text>
+  <rect x="940" y="690" width="76" height="26" rx="13" fill="#E0F2FE"/>
+  <text x="964" y="707" fill="#0369A1" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">巡检</text>
+  <rect x="852" y="738" width="172" height="10" rx="5" fill="#E2E8F0"/>
+  <rect x="852" y="758" width="164" height="10" rx="5" fill="#E2E8F0"/>
+  <rect x="852" y="778" width="120" height="10" rx="5" fill="#E2E8F0"/>
+
+  <rect x="1100" y="592" width="274" height="248" rx="18" fill="#FFFFFF" stroke="#D8E3F0"/>
+  <text x="1122" y="624" fill="#0F172A" font-family="Arial, 'PingFang SC', sans-serif" font-size="16" font-weight="700">同步与更新</text>
+  <text x="1122" y="654" fill="#64748B" font-family="Arial, 'PingFang SC', sans-serif" font-size="13">本地数据库固定运行，外部数据库文件只负责同步；更新走 GitHub Release。</text>
+  <rect x="1122" y="694" width="98" height="28" rx="14" fill="#EFF6FF" stroke="#BFDBFE"/>
+  <text x="1146" y="712" fill="#1D4ED8" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">立即下载</text>
+  <rect x="1230" y="694" width="98" height="28" rx="14" fill="#E2E8F0"/>
+  <text x="1254" y="712" fill="#334155" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">立即上传</text>
+  <rect x="1122" y="742" width="210" height="10" rx="5" fill="#E2E8F0"/>
+  <rect x="1122" y="762" width="182" height="10" rx="5" fill="#E2E8F0"/>
+  <rect x="1122" y="782" width="168" height="10" rx="5" fill="#E2E8F0"/>
+</svg>

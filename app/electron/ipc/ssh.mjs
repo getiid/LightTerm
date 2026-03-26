@@ -10,6 +10,34 @@ net=$(awk -F "[: ]+" "BEGIN{rx=0;tx=0} NR>2 && \\$1 != \\"lo\\" {rx+=\\$3; tx+=\
 printf "cpu1=%s\\ncpu2=%s\\nmem=%s\\ndisk=%s\\nnet=%s\\n" "$cpu1" "$cpu2" "$mem" "$disk" "$net"
 '`
 
+function normalizeSshErrorMessage(error) {
+  const message = String(error?.message || error || 'SSH 连接失败').trim() || 'SSH 连接失败'
+  if (/All configured authentication methods failed/i.test(message)) {
+    return '认证失败，请检查密码、密钥或认证方式'
+  }
+  return message
+}
+
+function shouldUseInteractiveSsh(payload) {
+  return !String(payload?.password || '').trim() && !String(payload?.privateKey || '').trim()
+}
+
+function buildInteractiveSshArgs(payload) {
+  return [
+    '-tt',
+    '-p',
+    String(Number(payload?.port || 22)),
+    '-o', 'PreferredAuthentications=keyboard-interactive,password,publickey',
+    '-o', 'NumberOfPasswordPrompts=3',
+    `${String(payload?.username || '').trim()}@${String(payload?.host || '').trim()}`,
+  ]
+}
+
+function isSecretPromptText(text) {
+  const value = String(text || '')
+  return /(password|passphrase|verification code|one-time code|otp|验证码|口令)/i.test(value)
+}
+
 function runSshExec(session, command, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     let settled = false
@@ -173,6 +201,7 @@ function runStandaloneSshScript({
 export function registerSshIpc(ipcMain, deps) {
   const {
     createSSHClient,
+    getNodePtySpawn,
     attachKeyboardHandler,
     connectConfigFromPayload,
     buildShellColorInitScript,
@@ -194,7 +223,7 @@ export function registerSshIpc(ipcMain, deps) {
     const conn = await createSSHClient()
     return await new Promise((resolve) => {
       attachKeyboardHandler(conn, validatedConfig.password)
-      conn.on('ready', () => { conn.end(); resolve({ ok: true }) }).on('error', (err) => resolve({ ok: false, error: err.message })).connect(connectConfigFromPayload(validatedConfig))
+      conn.on('ready', () => { conn.end(); resolve({ ok: true }) }).on('error', (err) => resolve({ ok: false, error: normalizeSshErrorMessage(err) })).connect(connectConfigFromPayload(validatedConfig))
     })
   })
 
@@ -217,12 +246,85 @@ export function registerSshIpc(ipcMain, deps) {
     const existing = sshSessions.get(sessionId)
     if (existing) {
       existing.silentClose = true
-      try { existing.stream.end('exit\n') } catch {}
-      try { existing.conn.end() } catch {}
+      if (existing?.mode === 'pty') {
+        try { existing.proc.kill() } catch {}
+      } else {
+        try { existing.stream.end('exit\n') } catch {}
+        try { existing.conn.end() } catch {}
+      }
       sshSessions.delete(sessionId)
       sshInputBuffers.delete(sessionId)
       sshOutputBuffers.delete(sessionId)
     }
+    if (shouldUseInteractiveSsh(validatedPayload)) {
+      try {
+        const ptySpawn = await getNodePtySpawn()
+        const sshCommand = process.platform === 'win32' ? 'ssh.exe' : 'ssh'
+        const proc = ptySpawn(sshCommand, buildInteractiveSshArgs(validatedPayload), {
+          cols: 120,
+          rows: 30,
+          env: process.env,
+          name: process.platform === 'win32' ? 'xterm-color' : 'xterm-256color',
+        })
+        return await new Promise((resolve) => {
+          let settled = false
+          const finish = (value) => {
+            if (settled) return
+            settled = true
+            resolve(value)
+          }
+          const sessionRef = {
+            mode: 'pty',
+            proc,
+            target,
+            silentClose: false,
+            expectingSecret: false,
+          }
+          sshSessions.set(sessionId, sessionRef)
+          sshInputBuffers.set(sessionId, '')
+          sshOutputBuffers.set(sessionId, '')
+          proc.onData((chunk) => {
+            const text = String(chunk || '')
+            const buffer = Buffer.from(text, 'utf8')
+            if (isSecretPromptText(text)) {
+              sessionRef.expectingSecret = true
+              sshInputBuffers.set(sessionId, '')
+            }
+            broadcast('ssh:data', {
+              sessionId,
+              data: text,
+              dataBase64: buffer.toString('base64'),
+            })
+            logOutputLines(sshOutputBuffers, sessionId, text, 'ssh', target)
+          })
+          proc.onExit(({ exitCode, signal }) => {
+            const active = sshSessions.get(sessionId)
+            if (active === sessionRef) {
+              sshSessions.delete(sessionId)
+              sshInputBuffers.delete(sessionId)
+              sshOutputBuffers.delete(sessionId)
+              metricSamples.delete(sessionId)
+              flushResponseLogsForSession('ssh', sessionId)
+            }
+            if (sessionRef.silentClose) {
+              finish({ ok: true })
+              return
+            }
+            broadcast('ssh:close', { sessionId })
+            appendAuditLog({ source: 'ssh', action: 'disconnect', target, content: `远程会话已关闭（code=${Number(exitCode || 0)}${signal ? `, signal=${String(signal)}` : ''}）` })
+            finish({ ok: true })
+          })
+          appendAuditLog({ source: 'ssh', action: 'connect', target, content: '已启动系统 SSH 终端，等待交互认证' })
+          finish({ ok: true })
+        })
+      } catch (err) {
+        const message = normalizeSshErrorMessage(err)
+        appendAuditLog({ source: 'ssh', action: 'error', target, content: message, level: 'error' })
+        broadcast('ssh:error', { sessionId, error: message })
+        return { ok: false, error: message }
+      }
+    }
+
     const conn = await createSSHClient()
     attachKeyboardHandler(conn, validatedPayload.password)
     return await new Promise((resolve) => {
@@ -273,7 +375,7 @@ export function registerSshIpc(ipcMain, deps) {
           finish({ ok: true })
         })
       }).on('error', (err) => {
-        const message = err?.message || 'SSH 连接失败'
+        const message = normalizeSshErrorMessage(err)
         appendAuditLog({ source: 'ssh', action: 'error', target, content: message, level: 'error' })
         broadcast('ssh:error', { sessionId, error: message })
         finish({ ok: false, error: message })
@@ -300,8 +402,22 @@ export function registerSshIpc(ipcMain, deps) {
     if (!session) return { ok: false, error: 'SSH 会话不存在' }
     const sessionId = String(validatedPayload.sessionId || '')
     const data = String(validatedPayload.data || '')
-    session.stream.write(data)
     const target = String(session?.target || `${session?.conn?.config?.username || 'user'}@${session?.conn?.config?.host || 'host'}:${Number(session?.conn?.config?.port || 22)}`)
+    if (session?.mode === 'pty') {
+      session.proc.write(data)
+      if (session.expectingSecret) {
+        if (/[\r\n]/.test(data)) {
+          flushResponseLogsForSession('ssh', sessionId)
+          appendAuditLog({ source: 'ssh', action: 'command', target, content: '[已输入认证信息]' })
+          session.expectingSecret = false
+          sshInputBuffers.set(sessionId, '')
+        }
+      } else {
+        logCommandLines(sshInputBuffers, sessionId, data, 'ssh', target)
+      }
+      return { ok: true }
+    }
+    session.stream.write(data)
     logCommandLines(sshInputBuffers, sessionId, data, 'ssh', target)
     return { ok: true }
   })
@@ -312,6 +428,10 @@ export function registerSshIpc(ipcMain, deps) {
     const validatedPayload = parsed.data
     const session = sshSessions.get(validatedPayload.sessionId)
     if (!session) return { ok: false, error: 'SSH 会话不存在' }
+    if (session?.mode === 'pty') {
+      try { session.proc.resize(validatedPayload.cols || 120, validatedPayload.rows || 30) } catch {}
+      return { ok: true }
+    }
     session.stream.setWindow(validatedPayload.rows || 30, validatedPayload.cols || 120, 0, 0)
     return { ok: true }
   })
@@ -324,7 +444,13 @@ export function registerSshIpc(ipcMain, deps) {
     if (!session) return { ok: true }
     const target = String(session?.target || `${session?.conn?.config?.username || 'user'}@${session?.conn?.config?.host || 'host'}:${Number(session?.conn?.config?.port || 22)}`)
     session.silentClose = true
-    session.stream.end('exit\n'); session.conn.end(); sshSessions.delete(sessionId); sshInputBuffers.delete(sessionId); sshOutputBuffers.delete(sessionId)
+    if (session?.mode === 'pty') {
+      try { session.proc.kill() } catch {}
+    } else {
+      session.stream.end('exit\n')
+      session.conn.end()
+    }
+    sshSessions.delete(sessionId); sshInputBuffers.delete(sessionId); sshOutputBuffers.delete(sessionId)
     metricSamples.delete(sessionId)
     flushResponseLogsForSession('ssh', sessionId)
     appendAuditLog({ source: 'ssh', action: 'disconnect', target, content: '用户手动断开' })
@@ -337,6 +463,9 @@ export function registerSshIpc(ipcMain, deps) {
     const { sessionId } = parsed.data
     const session = sshSessions.get(sessionId)
     if (!session) return { ok: false, error: 'SSH 会话不存在' }
+    if (!session?.conn) {
+      return { ok: true, supported: false, metrics: null, error: '' }
+    }
     try {
       const output = await runSshExec(session, SSH_METRICS_COMMAND, 6000)
       const nextMetrics = parseServerMetricOutput(output)

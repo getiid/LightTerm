@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import { Pencil } from 'lucide-vue-next'
-
 const { vm } = defineProps<{ vm: any }>()
 </script>
 
@@ -9,24 +7,11 @@ const { vm } = defineProps<{ vm: any }>()
     <div class="serial-head">
       <div>
         <h3>本地终端</h3>
-        <p class="hosts-header-sub">科技风终端皮肤，支持中文显示、快捷工具、代码片段复用</p>
+        <p class="hosts-header-sub">科技风终端皮肤，支持中文显示、代码片段分类和快速执行</p>
       </div>
       <div class="serial-head-actions">
         <button class="ghost" @click="vm.connectLocalTerminal">+ 新本地标签</button>
         <button class="muted" :disabled="!vm.localConnected.value" @click="vm.disconnectLocalTerminal">关闭当前标签</button>
-      </div>
-    </div>
-    <div v-if="vm.localTabs.value.length > 0" class="terminal-tabs local-tabs">
-      <div
-        v-for="tab in vm.localTabs.value"
-        :key="tab.id"
-        class="terminal-tab"
-        :class="{ active: vm.activeLocalTabId.value === tab.id }"
-        @click="vm.focusTerminal.value = true; vm.switchLocalTab(tab.id)"
-      >
-        <span class="terminal-tab-name">{{ tab.name }}</span>
-        <span class="status-dot" :class="tab.connected ? 'online' : 'offline'"></span>
-        <button class="terminal-tab-close" title="关闭本地标签" @click.stop="vm.closeLocalTab(tab.id)">×</button>
       </div>
     </div>
     <div class="grid local-shell-grid">
@@ -44,50 +29,71 @@ const { vm } = defineProps<{ vm: any }>()
       </label>
     </div>
     <div class="local-status">{{ vm.localStatus.value }}</div>
+    <div class="local-session-card compact">
+      <div class="hosts-left-title">
+        <span>已开连接</span>
+        <span class="hosts-stat">展示最近命令和处理状态</span>
+      </div>
+      <div v-if="vm.localTabs.value.length > 0" class="local-session-list">
+        <div
+          v-for="tab in vm.localTabs.value"
+          :key="tab.id"
+          class="local-session-item"
+          :class="{ active: vm.selectedLocalTabId.value === tab.id, entered: vm.activeLocalTabId.value === tab.id }"
+        >
+          <button
+            class="local-session-main card"
+            :title="tab.status"
+            @click="vm.selectLocalTab(tab.id)"
+            @dblclick="vm.openLocalTab(tab.id)"
+          >
+            <div class="local-session-card-head">
+              <span class="local-session-state status-pill" :class="vm.localCommandStateClass(tab)">{{ vm.localCommandStateLabel(tab) }}</span>
+            </div>
+            <div class="local-session-copy card">
+              <strong>{{ vm.localCommandTitle(tab) }}</strong>
+              <span>{{ vm.localCommandMeta(tab) }}</span>
+            </div>
+          </button>
+          <button class="local-session-close" title="关闭本地标签" @click="vm.closeLocalTab(tab.id)">×</button>
+        </div>
+      </div>
+      <div v-else class="local-session-empty">当前没有已开连接</div>
+    </div>
     <div class="local-tools-card">
       <div class="hosts-left-title">
-        <span>快捷工具（可自定义）</span>
-        <span class="hosts-stat">点击后自动跳到终端查看结果</span>
+        <span>代码片段快速执行</span>
+        <span class="hosts-stat">支持分类筛选，点击后直接发送到当前本地终端</span>
       </div>
 
       <div class="local-quick-toolbar">
-        <select v-model="vm.localQuickCategory.value" class="file-sort">
-          <option v-for="cat in vm.localQuickCategories.value" :key="cat" :value="cat">{{ cat }}</option>
+        <select v-model="vm.localSnippetCategory.value" class="file-sort">
+          <option v-for="cat in vm.localSnippetCategories.value" :key="cat" :value="cat">{{ cat }}</option>
         </select>
+        <input v-model="vm.localSnippetKeyword.value" placeholder="搜索片段名称/说明/命令" />
+        <span class="hosts-stat">共 {{ vm.filteredLocalSnippetItems.value.length }} 条</span>
         <div class="serial-head-actions">
-          <button class="ghost tiny" @click="vm.openLocalQuickCreate">新建指令</button>
+          <button class="ghost tiny" @click="vm.openSnippetsPanel">管理片段</button>
         </div>
       </div>
+      <div v-if="vm.snippetStatus.value" class="local-status snippet-status">{{ vm.snippetStatus.value }}</div>
 
-      <div class="local-quick-layout" :class="{ 'editor-open': vm.localQuickEditorVisible.value }">
-        <div class="local-tool-grid">
-          <div v-for="item in vm.filteredLocalQuickItems.value" :key="item.id" class="local-tool-item">
-            <button class="ghost" @click="vm.runLocalQuickCommand(item.cmd)">{{ item.label }}</button>
-            <div class="local-tool-meta">
+      <div class="local-quick-layout">
+        <div class="local-tool-grid scrollable">
+          <div v-for="item in vm.filteredLocalSnippetItems.value" :key="item.id" class="local-tool-item snippet-tool-item">
+            <div class="local-tool-head">
+              <strong>{{ item.name }}</strong>
               <span class="pill ghost">{{ item.category }}</span>
-              <button class="ghost tiny" @click="vm.startEditLocalQuickItem(item)">编辑</button>
-              <button class="danger tiny" @click="vm.removeLocalQuickItem(item.id)">删除</button>
             </div>
+            <div class="local-tool-desc">{{ item.description || '无说明' }}</div>
+            <div class="local-tool-meta">
+              <span class="hosts-stat">命令数：{{ vm.snippetCommandLines(item.commands).length }}</span>
+            </div>
+            <button class="ghost" :disabled="vm.snippetRunning.value || !vm.localConnected.value" @click="vm.executeSnippetOnLocalTerminal(item)">
+              {{ vm.snippetRunning.value ? '执行中…' : '执行到本地终端' }}
+            </button>
           </div>
-          <div v-if="vm.filteredLocalQuickItems.value.length === 0" class="file-row empty">当前分类暂无快捷指令</div>
-        </div>
-
-        <div class="local-quick-editor-column" :class="{ visible: vm.localQuickEditorVisible.value }">
-          <div class="local-quick-editor-panel">
-            <div class="editor-title">
-              <Pencil :size="14" /> 快捷工具编辑
-              <button class="ghost small" @click="vm.closeLocalQuickEditor">收起</button>
-            </div>
-            <div class="local-quick-editor">
-              <input v-model="vm.localQuickDraftCategory.value" placeholder="分类（例如：系统/网络/部署）" />
-              <input v-model="vm.localQuickDraftLabel.value" placeholder="指令名称（例如：查看端口）" />
-              <input v-model="vm.localQuickDraftCmd.value" placeholder="命令（例如：lsof -iTCP -sTCP:LISTEN -n -P）" />
-              <div class="local-quick-editor-actions">
-                <button class="muted" @click="vm.saveLocalQuickDraft">{{ vm.localQuickEditId.value ? '保存修改' : '添加指令' }}</button>
-                <button class="ghost" @click="vm.resetLocalQuickDraft">清空</button>
-              </div>
-            </div>
-          </div>
+          <div v-if="vm.filteredLocalSnippetItems.value.length === 0" class="file-row empty">当前分类暂无代码片段</div>
         </div>
       </div>
     </div>

@@ -61,6 +61,7 @@ watch(() => vm.activeTerminalMode.value, () => {
           </button>
         </div>
         <div v-else-if="vm.activeTerminalMode.value === 'local'" class="terminal-mode-tools">
+          <button type="button" class="ghost small terminal-return-btn" @click="vm.openLocalTerminalChooser()">返回</button>
           <button type="button" class="ghost small terminal-menu-btn" title="终端工具" @click="toggleToolsDrawer">
             <Menu :size="16" />
           </button>
@@ -94,10 +95,15 @@ watch(() => vm.activeTerminalMode.value, () => {
           <button class="danger terminal-tool-btn terminal-tool-btn-danger" @click="vm.closeSerial">断开串口</button>
         </div>
         <div class="terminal-tools-right">
+          <select v-model="vm.terminalSnippetCategory.value" class="terminal-tool-select">
+            <option v-for="cat in vm.terminalSnippetCategories.value" :key="cat" :value="cat">
+              {{ cat }}
+            </option>
+          </select>
           <select v-model="vm.terminalSnippetId.value" class="terminal-tool-select">
             <option value="">选择代码片段</option>
             <option v-for="item in vm.terminalSnippetItems.value" :key="item.id" :value="item.id">
-              {{ item.name }} · {{ item.category }}
+              {{ item.name }}
             </option>
           </select>
           <button class="muted terminal-tool-btn" :disabled="vm.snippetRunning.value" @click="vm.runTerminalSnippet">执行片段</button>
@@ -153,11 +159,19 @@ watch(() => vm.activeTerminalMode.value, () => {
           </select>
         </label>
         <label class="terminal-drawer-field">
+          <span>片段分类</span>
+          <select v-model="vm.terminalSnippetCategory.value" class="terminal-tool-select">
+            <option v-for="cat in vm.terminalSnippetCategories.value" :key="cat" :value="cat">
+              {{ cat }}
+            </option>
+          </select>
+        </label>
+        <label class="terminal-drawer-field">
           <span>代码片段</span>
           <select v-model="vm.terminalSnippetId.value" class="terminal-tool-select">
             <option value="">选择代码片段</option>
             <option v-for="item in vm.terminalSnippetItems.value" :key="item.id" :value="item.id">
-              {{ item.name }} · {{ item.category }}
+              {{ item.name }}
             </option>
           </select>
         </label>

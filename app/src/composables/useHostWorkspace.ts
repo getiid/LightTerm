@@ -174,7 +174,6 @@ export function useHostWorkspace(params: UseHostWorkspaceParams) {
     sshForm,
     quickConnectInput,
     selectedHostId,
-    hostItems,
     hostName,
     hostCategory,
     selectedCategory: hostFilters.selectedCategory as unknown as Ref<string>,

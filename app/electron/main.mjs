@@ -210,9 +210,8 @@ function responseLogBufferKey(source, sessionId) {
 function flushResponseLogBuffer(key) {
   const state = responseLogBuffers.get(key)
   if (!state) return
-  if (state.timer) clearTimeout(state.timer)
   const lines = Array.isArray(state.lines) ? state.lines : []
-  const content = lines.join('\n').trim().slice(0, 4000)
+  const content = lines.join('\n').trim().slice(0, 12000)
   if (content) {
     appendAuditLog({
       source: String(state.source || 'app'),
@@ -241,18 +240,15 @@ function appendResponseLogLine(source, sessionId, target, line) {
       source: String(source || 'app'),
       target: String(target || ''),
       lines: [],
-      timer: null,
     }
     responseLogBuffers.set(key, state)
   }
   if (String(target || '').trim()) state.target = String(target || '').trim()
   state.lines.push(String(line || ''))
-  if (state.lines.length > 120) {
+  const totalChars = state.lines.reduce((sum, item) => sum + String(item || '').length, 0)
+  if (state.lines.length > 240 || totalChars > 12000) {
     flushResponseLogBuffer(key)
-    return
   }
-  if (state.timer) clearTimeout(state.timer)
-  state.timer = setTimeout(() => flushResponseLogBuffer(key), 240)
 }
 
 function logOutputLines(bufferMap, sessionId, chunk, source, target) {
@@ -2257,16 +2253,24 @@ async function closeAllSshSessions(reason = 'app-exit') {
   sshOutputBuffers.clear()
   flushAllResponseLogs()
   await Promise.allSettled(entries.map(async ([sessionId, session]) => {
-    try {
-      session?.stream?.end?.('exit\n')
-    } catch (e) {
-      logMain(`ssh cleanup stream end failed reason=${reason} session=${sessionId} error=${e?.message || e}`)
-    }
-    await wait(80)
-    try {
-      session?.conn?.end?.()
-    } catch (e) {
-      logMain(`ssh cleanup conn end failed reason=${reason} session=${sessionId} error=${e?.message || e}`)
+    if (session?.mode === 'pty') {
+      try {
+        session?.proc?.kill?.()
+      } catch (e) {
+        logMain(`ssh cleanup pty kill failed reason=${reason} session=${sessionId} error=${e?.message || e}`)
+      }
+    } else {
+      try {
+        session?.stream?.end?.('exit\n')
+      } catch (e) {
+        logMain(`ssh cleanup stream end failed reason=${reason} session=${sessionId} error=${e?.message || e}`)
+      }
+      await wait(80)
+      try {
+        session?.conn?.end?.()
+      } catch (e) {
+        logMain(`ssh cleanup conn end failed reason=${reason} session=${sessionId} error=${e?.message || e}`)
+      }
     }
     appendAuditLog({
       source: 'ssh',
@@ -3528,6 +3532,7 @@ registerLocalIpc(ipcMain, {
 
 registerSshIpc(ipcMain, {
   createSSHClient,
+  getNodePtySpawn,
   attachKeyboardHandler,
   connectConfigFromPayload,
   buildShellColorInitScript,

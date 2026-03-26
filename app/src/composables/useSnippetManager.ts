@@ -15,6 +15,14 @@ export type SnippetItem = {
   updatedAt: number
 }
 
+type LegacyQuickToolItem = {
+  id: string
+  category: string
+  label: string
+  cmd: string
+  updatedAt?: number
+}
+
 type TerminalMode = 'ssh' | 'serial' | 'local'
 
 type UseSnippetManagerParams = {
@@ -27,6 +35,7 @@ type UseSnippetManagerParams = {
   serialCurrentPath: Ref<string>
   localConnected: Readonly<Ref<boolean>>
   activeLocalSessionId: Readonly<Ref<string>>
+  recordLocalInput: (sessionId: string, data: string) => void
   useHost: (host: any) => void
   connectSSH: (options?: { keepNav?: boolean } | Event) => Promise<boolean>
   focusTerminal: () => void
@@ -52,6 +61,7 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
     serialCurrentPath,
     localConnected,
     activeLocalSessionId,
+    recordLocalInput,
     useHost,
     connectSSH,
     focusTerminal,
@@ -79,6 +89,9 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
   const snippetsLoaded = ref(false)
   const snippetKeyword = ref('')
   const snippetCategory = ref(allCategory)
+  const localSnippetCategory = ref(allCategory)
+  const localSnippetKeyword = ref('')
+  const terminalSnippetCategory = ref(allCategory)
   const snippetStatus = ref('')
   const snippetRunDelayMs = ref(1200)
   const snippetRunning = ref(false)
@@ -121,6 +134,36 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
       .sort((a, b) => b.updatedAt - a.updatedAt)
   })
 
+  const localSnippetCategories = computed(() => [allCategory, ...snippetCategories.value])
+
+  const filteredLocalSnippetItems = computed(() => {
+    const keyword = localSnippetKeyword.value.trim().toLowerCase()
+    return snippetItems.value
+      .filter((item) => {
+        const inCategory = localSnippetCategory.value === allCategory || item.category === localSnippetCategory.value
+        if (!inCategory) return false
+        if (!keyword) return true
+        return [item.name, item.description, item.commands]
+          .some((value) => String(value || '').toLowerCase().includes(keyword))
+      })
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+  })
+
+  const ensureValidCategorySelection = () => {
+    if (snippetCategory.value !== allCategory && !snippetCategories.value.includes(snippetCategory.value)) {
+      snippetCategory.value = allCategory
+    }
+    if (localSnippetCategory.value !== allCategory && !snippetCategories.value.includes(localSnippetCategory.value)) {
+      localSnippetCategory.value = allCategory
+    }
+    if (terminalSnippetCategory.value !== allCategory && !snippetCategories.value.includes(terminalSnippetCategory.value)) {
+      terminalSnippetCategory.value = allCategory
+    }
+    if (snippetEdit.value.category && !snippetCategories.value.includes(snippetEdit.value.category)) {
+      snippetEdit.value.category = defaultCategory
+    }
+  }
+
   const currentSessionHostId = computed(() => {
     const host = hostItems.value.find((item) =>
       item.host === sshForm.value.host
@@ -130,14 +173,18 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
     return host?.id || ''
   })
 
+  const terminalSnippetCategories = computed(() => [allCategory, ...snippetCategories.value])
+
   const terminalSnippetItems = computed(() => {
     const currentHostId = currentSessionHostId.value
-    return [...snippetItems.value].sort((a, b) => {
-      const aMatched = !!currentHostId && a.hostId === currentHostId
-      const bMatched = !!currentHostId && b.hostId === currentHostId
-      if (aMatched !== bMatched) return aMatched ? -1 : 1
-      return b.updatedAt - a.updatedAt
-    })
+    return [...snippetItems.value]
+      .filter((item) => terminalSnippetCategory.value === allCategory || item.category === terminalSnippetCategory.value)
+      .sort((a, b) => {
+        const aMatched = !!currentHostId && a.hostId === currentHostId
+        const bMatched = !!currentHostId && b.hostId === currentHostId
+        if (aMatched !== bMatched) return aMatched ? -1 : 1
+        return b.updatedAt - a.updatedAt
+      })
   })
 
   const formatSnippetRunTime = (value: number) => {
@@ -256,6 +303,44 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
     }
   }
 
+  const readLegacyQuickTools = async () => {
+    try {
+      const res = await window.lightterm.quicktoolsGetState()
+      const parsed = Array.isArray(res.items) ? res.items : []
+      const items = parsed
+        .map((item: any) => ({
+          id: String(item?.id || ''),
+          category: String(item?.category || defaultCategory).trim() || defaultCategory,
+          label: String(item?.label || '').trim(),
+          cmd: String(item?.cmd || '').trim(),
+          updatedAt: Number(item?.updatedAt || 0),
+        }))
+        .filter((item: LegacyQuickToolItem) => item.label && item.cmd)
+      const extraCategories = [...new Set(items.map((item) => item.category).filter(Boolean))]
+      return { items, extraCategories }
+    } catch {
+      return { items: [], extraCategories: [] }
+    }
+  }
+
+  const normalizeQuickToolsAsSnippets = (items: LegacyQuickToolItem[]) => items.map((item, index) => {
+    const now = Number(item.updatedAt || Date.now() + index)
+    return {
+      id: `snippet-${String(item.id || `quick-${index}`).replace(/[^a-zA-Z0-9_-]/g, '')}`,
+      name: item.label,
+      category: item.category || defaultCategory,
+      hostId: '',
+      description: '由快捷工具迁移',
+      commands: item.cmd,
+      reminderDate: '',
+      lastRunAt: 0,
+      lastRunStatus: 'idle' as const,
+      lastRunOutput: '',
+      createdAt: now,
+      updatedAt: now,
+    }
+  })
+
   const mergeSnippetSources = (
     remoteItems: SnippetItem[],
     remoteCategories: string[],
@@ -354,14 +439,34 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
       const remoteItems = Array.isArray(res.items) ? (res.items as SnippetItem[]) : []
       const remoteCategories = Array.isArray(res.extraCategories) ? res.extraCategories : []
       const legacy = readLegacySnippets()
+      const legacyQuickTools = await readLegacyQuickTools()
+      const migratedQuickSnippets = normalizeQuickToolsAsSnippets(legacyQuickTools.items)
+      let mergedChanged = false
+      let merged = {
+        items: remoteItems,
+        extraCategories: remoteCategories,
+        changed: false,
+      }
       if (legacy && (legacy.items.length > 0 || legacy.extraCategories.length > 0)) {
-        const merged = mergeSnippetSources(remoteItems, remoteCategories, legacy.items, legacy.extraCategories)
+        merged = mergeSnippetSources(merged.items, merged.extraCategories, legacy.items, legacy.extraCategories)
+        mergedChanged = mergedChanged || merged.changed
+      }
+      if (migratedQuickSnippets.length > 0 || legacyQuickTools.extraCategories.length > 0) {
+        merged = mergeSnippetSources(merged.items, merged.extraCategories, migratedQuickSnippets, legacyQuickTools.extraCategories)
+        mergedChanged = mergedChanged || merged.changed
+      }
+      if ((legacy && (legacy.items.length > 0 || legacy.extraCategories.length > 0)) || migratedQuickSnippets.length > 0) {
         applySnippetState(merged.items, merged.extraCategories)
-        if (merged.changed || remoteItems.length === 0) {
+        if (mergedChanged || remoteItems.length === 0 || migratedQuickSnippets.length > 0) {
           await saveSnippetState(merged.items, merged.extraCategories)
-          snippetStatus.value = remoteItems.length > 0 || remoteCategories.length > 0
-            ? '已合并本机旧版代码片段到共享数据库'
-            : '已迁移本机旧版代码片段到共享数据库'
+          if (migratedQuickSnippets.length > 0) {
+            snippetStatus.value = '已将快捷工具迁移到代码片段'
+            try { await window.lightterm.quicktoolsSetState({ items: [] }) } catch {}
+          } else {
+            snippetStatus.value = remoteItems.length > 0 || remoteCategories.length > 0
+              ? '已合并本机旧版代码片段到共享数据库'
+              : '已迁移本机旧版代码片段到共享数据库'
+          }
         }
         try { localStorage.removeItem(legacyStorageKey) } catch {}
         return
@@ -653,6 +758,35 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
       .filter((line) => !!line && !line.startsWith('#'))
   )
 
+  const sendCommandsToLocalTerminal = async (target: SnippetItem, lines: string[]) => {
+    if (!localConnected.value || !activeLocalSessionId.value) {
+      snippetStatus.value = '请先连接本地终端'
+      return
+    }
+    snippetRunning.value = true
+    snippetStopRequested.value = false
+    const delayMs = Math.max(120, Number(snippetRunDelayMs.value || 0))
+    let sent = 0
+    for (let i = 0; i < lines.length; i += 1) {
+      if (snippetStopRequested.value) break
+      const cmd = lines[i]
+      const res = await window.lightterm.localWrite({ sessionId: activeLocalSessionId.value, data: `${cmd}\n` })
+      if (!res.ok) {
+        snippetStatus.value = `本地执行失败：${res.error || '未知错误'}`
+        break
+      }
+      recordLocalInput(activeLocalSessionId.value, `${cmd}\n`)
+      sent += 1
+      if (i < lines.length - 1) await sleep(delayMs)
+    }
+    snippetRunning.value = false
+    snippetStopRequested.value = false
+    snippetStatus.value = sent === lines.length
+      ? `本地执行完成：${target.name}`
+      : `本地已执行 ${sent}/${lines.length}`
+    focusTerminal()
+  }
+
   const snippetLineCount = (commands: string) => {
     const raw = String(commands || '')
     if (!raw.trim()) return 0
@@ -705,11 +839,11 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
 
   const getTerminalSnippet = () => {
     if (terminalSnippetId.value) {
-      const matched = snippetItems.value.find((item) => item.id === terminalSnippetId.value)
+      const matched = terminalSnippetItems.value.find((item) => item.id === terminalSnippetId.value)
       if (matched) return matched
     }
     if (selectedSnippetId.value) {
-      const selected = snippetItems.value.find((item) => item.id === selectedSnippetId.value)
+      const selected = terminalSnippetItems.value.find((item) => item.id === selectedSnippetId.value)
       if (selected) return selected
     }
     return terminalSnippetItems.value[0] || null
@@ -767,31 +901,20 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
       return
     }
 
-    if (!localConnected.value || !activeLocalSessionId.value) {
-      snippetStatus.value = '请先连接本地终端'
+    await sendCommandsToLocalTerminal(target, lines)
+  }
+
+  const executeSnippetOnLocalTerminal = async (target: SnippetItem) => {
+    if (!target?.id) {
+      snippetStatus.value = '没有可执行的代码片段'
       return
     }
-    snippetRunning.value = true
-    snippetStopRequested.value = false
-    const delayMs = Math.max(120, Number(snippetRunDelayMs.value || 0))
-    let sent = 0
-    for (let i = 0; i < lines.length; i += 1) {
-      if (snippetStopRequested.value) break
-      const cmd = lines[i]
-      const res = await window.lightterm.localWrite({ sessionId: activeLocalSessionId.value, data: `${cmd}\n` })
-      if (!res.ok) {
-        snippetStatus.value = `本地执行失败：${res.error || '未知错误'}`
-        break
-      }
-      sent += 1
-      if (i < lines.length - 1) await sleep(delayMs)
+    const lines = snippetCommandLines(target.commands || '')
+    if (lines.length === 0) {
+      snippetStatus.value = '没有可执行命令（空行和 # 注释会自动跳过）'
+      return
     }
-    snippetRunning.value = false
-    snippetStopRequested.value = false
-    snippetStatus.value = sent === lines.length
-      ? `本地执行完成：${target.name}`
-      : `本地已执行 ${sent}/${lines.length}`
-    focusTerminal()
+    await sendCommandsToLocalTerminal(target, lines)
   }
 
   const sendSnippetRawToTerminal = async () => {
@@ -822,6 +945,9 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
       : activeTerminalMode.value === 'serial'
         ? await window.lightterm.sendSerial({ path: serialCurrentPath.value, data: payload, isHex: false })
         : await window.lightterm.localWrite({ sessionId: activeLocalSessionId.value, data: payload })
+    if (res.ok && activeTerminalMode.value === 'local' && activeLocalSessionId.value) {
+      recordLocalInput(activeLocalSessionId.value, payload)
+    }
     snippetStatus.value = res.ok ? `片段原文已发送：${target.name}` : `片段发送失败：${res.error || '未知错误'}`
     focusTerminal()
   }
@@ -832,11 +958,24 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
     }
   }, { immediate: true })
 
+  watch(terminalSnippetItems, (items) => {
+    if (!items.some((item) => item.id === terminalSnippetId.value)) {
+      terminalSnippetId.value = items[0]?.id || ''
+    }
+  }, { immediate: true })
+
+  watch(snippetCategories, () => {
+    ensureValidCategorySelection()
+  }, { immediate: true })
+
   return {
     snippetItems,
     snippetsLoaded,
     snippetKeyword,
     snippetCategory,
+    localSnippetCategory,
+    localSnippetKeyword,
+    terminalSnippetCategory,
     snippetStatus,
     snippetRunDelayMs,
     snippetRunning,
@@ -853,6 +992,9 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
     snippetCategories,
     displaySnippetCategories,
     filteredSnippetItems,
+    localSnippetCategories,
+    filteredLocalSnippetItems,
+    terminalSnippetCategories,
     currentSessionHostId,
     terminalSnippetItems,
     createEmptySnippet,
@@ -883,6 +1025,7 @@ export function useSnippetManager(params: UseSnippetManagerParams) {
     snippetReminderTone,
     getTerminalSnippet,
     runTerminalSnippet,
+    executeSnippetOnLocalTerminal,
     sendSnippetRawToTerminal,
   }
 }

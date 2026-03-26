@@ -23,6 +23,7 @@ type UseTerminalRuntimeParams = {
   localConnected: Readonly<Ref<boolean>>
   activeLocalSessionId: Readonly<Ref<string>>
   localStatus: Ref<string>
+  recordLocalInput: (sessionId: string, data: string) => void
   appendLocalData: (sessionId: string, text: string) => void
   handleLocalClose: (sessionId: string, code: number) => void
   handleLocalError: (sessionId: string, error: string) => void
@@ -51,6 +52,7 @@ export function useTerminalRuntime(params: UseTerminalRuntimeParams) {
     localConnected,
     activeLocalSessionId,
     localStatus,
+    recordLocalInput,
     appendLocalData,
     handleLocalClose,
     handleLocalError,
@@ -220,7 +222,9 @@ export function useTerminalRuntime(params: UseTerminalRuntimeParams) {
     if (!res.ok) {
       localStatus.value = `本地终端写入失败：${res.error || '未知错误'}`
       terminal?.writeln(`\r\n[本地终端写入失败] ${res.error || '未知错误'}`)
+      return
     }
+    recordLocalInput(activeLocalSessionId.value, data)
   }
 
   const syncLocalTerminalSize = async () => {
